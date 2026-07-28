@@ -7,10 +7,14 @@ import type {
 } from "../types.js";
 import { evaluateCondition } from "../rule/condition-eval.js";
 import {
+  expandEquivalentPaths,
   isAbsolutePath,
+  isMappedPath,
   isRelativePath,
-  joinPath,
+  joinPathAware,
+  markMappedPath,
   PathError,
+  schemaHasPath,
 } from "../rule/paths.js";
 import type {
   ConditionExpr,
@@ -19,8 +23,8 @@ import type {
   RuleValidationIssue,
   RuleValidationIssueType,
 } from "../rule/types.js";
-import { validateMappings } from "./engine.js";
-export interface RuleValidationSummary {
+import { resolveRuleCopyMode } from "../rule/copy-mode.js";
+import { validateMappings } from "./engine.js";export interface RuleValidationSummary {
   errorCount: number;
   warningCount: number;
   infoCount: number;
@@ -46,11 +50,11 @@ const PRIMITIVES = new Set<InferredType>([
 ]);
 
 function issue(
-  partial: Omit<RuleValidationIssue, "severity"> & {
+  partial: Omit<RuleValidationIssue, "severity" | "issueKey"> & {
     severity?: RuleValidationIssue["severity"];
   },
 ): RuleValidationIssue {
-  return {
+  const built: RuleValidationIssue = {
     severity: partial.severity ?? "error",
     type: partial.type,
     ruleGroupId: partial.ruleGroupId,
@@ -58,9 +62,30 @@ function issue(
     childMappingId: partial.childMappingId,
     sourcePath: partial.sourcePath,
     targetPath: partial.targetPath,
+    scope: partial.scope,
     message: partial.message,
     recommendedFix: partial.recommendedFix,
   };
+  built.issueKey = buildIssueKey(built);
+  return built;
+}
+
+export function buildIssueKey(i: {
+  type: string;
+  ruleId?: string;
+  childMappingId?: string;
+  sourcePath?: string;
+  targetPath?: string;
+  scope?: string;
+}): string {
+  return [
+    i.type,
+    i.scope ?? "",
+    i.ruleId ?? "",
+    i.childMappingId ?? "",
+    i.sourcePath ?? "",
+    i.targetPath ?? "",
+  ].join("|");
 }
 
 function conditionSignature(expr: ConditionExpr | undefined): string {
@@ -112,7 +137,11 @@ function nodeType(
   schema: SchemaTree,
   path: string,
 ): InferredType | undefined {
-  return schema.nodes[path]?.type;
+  for (const candidate of expandEquivalentPaths(path)) {
+    const t = schema.nodes[candidate]?.type;
+    if (t) return t;
+  }
+  return undefined;
 }
 
 function areCompatiblePrimitives(a: InferredType, b: InferredType): boolean {
@@ -301,13 +330,13 @@ export function validateRuleGroups(
           issues.push(
             issue({
               severity: "warning",
-              type: "unreachable_rule",
+              type: "definitely_unreachable_rule",
               ruleGroupId: group.id,
               ruleId: rule.id,
               message:
-                "Rule is unreachable in first-match mode because an earlier unconditional rule always matches.",
+                "DEFINITELY_UNREACHABLE_RULE: in first-match mode this rule cannot run because an earlier enabled unconditional (or direct) rule always matches. Other unreachable cases are not yet proven.",
               recommendedFix:
-                "Raise this rule's priority, disable the earlier unconditional rule, or switch mode.",
+                "Raise this rule's priority, disable the earlier unconditional rule, or switch execution mode.",
             }),
           );
           continue;
@@ -372,9 +401,9 @@ export function validateRuleGroups(
               type: "overlapping_rule",
               ruleGroupId: group.id,
               ruleId: b.id,
-              message: `Rules "${a.id}" and "${b.id}" share the same condition but different destinations.`,
+              message: `Potential overlapping rules "${a.id}" and "${b.id}" share the same condition but different destinations. Overlap is not statically provable beyond identical condition signatures — use Preview with sample data for runtime evidence (V1).`,
               recommendedFix:
-                "Differentiate conditions, or rely on first-match priority intentionally.",
+                "Differentiate conditions, rely on first-match priority intentionally, or confirm via Preview.",
             }),
           );
         }
@@ -520,10 +549,30 @@ export function validateRuleGroups(
       }
 
       // Track covered paths for direct rules
-      if (rule.category === "direct" || rule.childMappings.length === 0) {
-        mappedSources.add(rule.sourceNode);
-        mappedTargets.add(rule.destinationNode);
+      if (rule.category === "direct" || resolveRuleCopyMode(rule) === "COPY_SOURCE_NODE") {
+        markMappedPath(mappedSources, rule.sourceNode);
+        markMappedPath(mappedTargets, rule.destinationNode);
       }
+      if (resolveRuleCopyMode(rule) === "ROUTE_ONLY") {
+        // Route records destination as structurally selected, not field-covered.
+        markMappedPath(mappedTargets, rule.destinationNode);
+      }
+
+      const destIsArray =
+        targetSchema.nodes[rule.destinationNode]?.type === "array" ||
+        targetSchema.nodes[`${rule.destinationNode}[*]`]?.type === "object" ||
+        Boolean(
+          Object.keys(targetSchema.nodes).some(
+            (p) =>
+              p.startsWith(`${rule.destinationNode}[*]`) ||
+              p.startsWith(`${rule.destinationNode}.`),
+          ),
+        );
+      // Prefer schema array type when available
+      const destNodeType =
+        targetSchema.nodes[rule.destinationNode]?.type ??
+        (targetSchema.nodes[`${rule.destinationNode}[*]`] ? "array" : undefined);
+      const parentIsArray = destNodeType === "array" || destIsArray && !rule.destinationNode.endsWith("[*]");
 
       // Child mappings
       const childTargets = new Set<string>();
@@ -549,8 +598,18 @@ export function validateRuleGroups(
         let absSource: string;
         let absTarget: string;
         try {
-          absSource = joinPath(rule.sourceNode, child.sourcePath);
-          absTarget = joinPath(rule.destinationNode, child.targetPath);
+          const srcIsArray =
+            sourceSchema.nodes[rule.sourceNode]?.type === "array";
+          absSource = joinPathAware(
+            rule.sourceNode,
+            child.sourcePath,
+            srcIsArray || rule.sourceNode.endsWith("[*]"),
+          );
+          absTarget = joinPathAware(
+            rule.destinationNode,
+            child.targetPath,
+            parentIsArray || rule.destinationNode.endsWith("[*]"),
+          );
         } catch (err) {
           issues.push(
             issue({
@@ -568,8 +627,10 @@ export function validateRuleGroups(
           continue;
         }
 
-        mappedSources.add(absSource);
-        mappedTargets.add(absTarget);
+        markMappedPath(mappedSources, absSource);
+        markMappedPath(mappedTargets, absTarget);
+        // Parent destination container is covered when children are mapped (V2).
+        markMappedPath(mappedTargets, rule.destinationNode);
 
         if (childTargets.has(absTarget)) {
           issues.push(
@@ -723,7 +784,7 @@ export function validateRuleGroups(
           if (!parent) continue;
           if (parent.type !== "object" && parent.type !== "array") continue;
           if (!parent.required) continue;
-          if (mappedTargets.has(parentPath)) continue;
+          if (isMappedPath(mappedTargets, parentPath)) continue;
           // Parent might be the rule destination itself
           if (parentPath === rule.destinationNode) continue;
           issues.push(
@@ -743,7 +804,10 @@ export function validateRuleGroups(
 
       // Direct rule schema presence
       if (rule.category === "direct") {
-        if (!sourceSchema.nodes[rule.sourceNode] && isAbsolutePath(rule.sourceNode)) {
+        if (
+          !schemaHasPath(Object.keys(sourceSchema.nodes), rule.sourceNode) &&
+          isAbsolutePath(rule.sourceNode)
+        ) {
           issues.push(
             issue({
               severity: "warning",
@@ -756,7 +820,7 @@ export function validateRuleGroups(
             }),
           );
         }
-        if (!targetSchema.nodes[rule.destinationNode]) {
+        if (!schemaHasPath(Object.keys(targetSchema.nodes), rule.destinationNode)) {
           issues.push(
             issue({
               severity: "warning",
@@ -802,39 +866,120 @@ export function validateRuleGroups(
     }
   }
 
-  // Required / optional targets & unused sources (project-wide)
+  // --- V3 scoped required / optional / unused ---
+  type DestInfo = {
+    ruleGroupId: string;
+    ruleId: string;
+    destinationNode: string;
+    conditional: boolean;
+  };
+  const destinations: DestInfo[] = [];
+  for (const group of ruleGroups) {
+    for (const rule of group.rules) {
+      if (!rule.enabled) continue;
+      destinations.push({
+        ruleGroupId: group.id,
+        ruleId: rule.id,
+        destinationNode: rule.destinationNode,
+        conditional: rule.kind === "conditional",
+      });
+    }
+  }
+
+  function underDestination(fieldPath: string, destinationNode: string): boolean {
+    for (const fp of expandEquivalentPaths(fieldPath)) {
+      for (const dp of expandEquivalentPaths(destinationNode)) {
+        if (fp === dp || fp.startsWith(`${dp}.`) || fp.startsWith(`${dp}[*]`)) {
+          return true;
+        }
+        // destination $.arr vs field $.arr[*].x
+        if (dp.endsWith("[*]") && (fp === dp.slice(0, -3) || fp.startsWith(`${dp}.`) || fp.startsWith(`${dp.slice(0, -3)}[*]`))) {
+          return true;
+        }
+        if (!dp.endsWith("[*]") && (fp.startsWith(`${dp}[*]`) || fp.startsWith(`${dp}.`))) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   for (const node of Object.values(targetSchema.nodes)) {
     if (node.path === "$") continue;
-    if (mappedTargets.has(node.path)) continue;
-    if (node.required) {
+    if (isMappedPath(mappedTargets, node.path)) continue;
+
+    const owning = destinations.filter((d) =>
+      underDestination(node.path, d.destinationNode),
+    );
+
+    if (!node.required) {
+      if (owning.length === 0) {
+        issues.push(
+          issue({
+            severity: "info",
+            type: "unmapped_optional_target",
+            scope: "project",
+            targetPath: node.path,
+            message: `Optional target field "${node.path}" is unmapped (project-wide).`,
+            recommendedFix: "Map intentionally or leave unmapped.",
+          }),
+        );
+      }
+      continue;
+    }
+
+    if (owning.length === 0) {
       issues.push(
         issue({
           type: "unmapped_required_target",
+          scope: "project",
           targetPath: node.path,
-          message: `Required target field "${node.path}" (${node.type}) has no rule or child mapping.`,
-          recommendedFix: "Add a direct rule, routing child mapping, or mark optional.",
+          message: `Required target field "${node.path}" (${node.type}) is unmapped project-wide (not under any rule destination).`,
+          recommendedFix: "Add a rule/child mapping covering this field, or mark it optional.",
         }),
       );
-    } else {
-      issues.push(
-        issue({
-          severity: "info",
-          type: "unmapped_optional_target",
-          targetPath: node.path,
-          message: `Optional target field "${node.path}" is unmapped.`,
-          recommendedFix: "Map intentionally or leave unmapped.",
-        }),
-      );
+      continue;
+    }
+
+    for (const owner of owning) {
+      if (owner.conditional) {
+        issues.push(
+          issue({
+            severity: "warning",
+            type: "unmapped_required_target",
+            scope: "conditional_route",
+            ruleGroupId: owner.ruleGroupId,
+            ruleId: owner.ruleId,
+            targetPath: node.path,
+            message: `Required field "${node.path}" is unmapped under conditional route "${owner.ruleId}" → ${owner.destinationNode}. It is required only when that route executes — not universally missing.`,
+            recommendedFix:
+              "Add a child mapping on this rule, or accept the gap for non-matching samples.",
+          }),
+        );
+      } else {
+        issues.push(
+          issue({
+            type: "unmapped_required_target",
+            scope: "route",
+            ruleGroupId: owner.ruleGroupId,
+            ruleId: owner.ruleId,
+            targetPath: node.path,
+            message: `Required field "${node.path}" is unmapped within route "${owner.ruleId}" → ${owner.destinationNode}.`,
+            recommendedFix: "Map this field under the route's child mappings or direct rule.",
+          }),
+        );
+      }
     }
   }
 
   for (const node of Object.values(sourceSchema.nodes)) {
     if (node.path === "$") continue;
-    if (mappedSources.has(node.path)) continue;
+    if (isMappedPath(mappedSources, node.path)) continue;
     issues.push(
       issue({
         severity: "info",
         type: "unused_source",
+        scope: "project",
         sourcePath: node.path,
         message: `Source field "${node.path}" is not used by any rule or child mapping.`,
         recommendedFix: "Map it under a rule or ignore intentionally.",
@@ -885,6 +1030,9 @@ function mapLegacyIssueType(
       return "duplicate_target_mapping";
     case "structurally_unreachable":
       return "structurally_unreachable";
+    case "definitely_unreachable_rule":
+    case "unreachable_rule":
+      return "structurally_unreachable";
     case "conflicting_rule":
     case "overlapping_rule":
       return "source_multi_target_conflict";
@@ -893,9 +1041,17 @@ function mapLegacyIssueType(
   }
 }
 
+function legacyIssueKey(i: ValidationIssue): string {
+  return buildIssueKey({
+    type: i.issueType,
+    sourcePath: i.sourcePath,
+    targetPath: i.targetPath,
+  });
+}
+
 /**
- * Validate a project using ruleGroups.
- * Optionally merges legacy FieldMapping validation for backward compatibility.
+ * Validate a project using ruleGroups as the canonical path (V5).
+ * When mappings are migrated equivalents, suppress duplicate legacy issues.
  */
 export function validateProjectRules(
   project: {
@@ -916,27 +1072,56 @@ export function validateProjectRules(
   );
 
   const issues = ruleIssuesToLegacyIssues(ruleReport.issues);
+  const seen = new Set(issues.map(legacyIssueKey));
+  // Also index by path pair for cross-type dedupe
+  const pathPairs = new Set(
+    ruleReport.issues.map(
+      (r) => `${r.sourcePath ?? ""}=>${r.targetPath ?? ""}`,
+    ),
+  );
 
-  if (
-    options?.includeLegacyMappingValidation &&
+  const hasMigratedRules = project.ruleGroups.some((g) =>
+    g.rules.some((r) => r.migrationSource === "FIELD_MAPPING_V1"),
+  );
+
+  // V5: prefer canonical rule validation; only add legacy issues that are not
+  // represented, and skip entirely when mappings are fully covered by migrated rules.
+  const shouldMergeLegacy =
+    options?.includeLegacyMappingValidation === true &&
     project.mappings &&
-    project.mappings.length > 0
-  ) {
+    project.mappings.length > 0 &&
+    !hasMigratedRules;
+
+  if (shouldMergeLegacy) {
     const legacy = validateMappings(
       project.sourceSchema,
       project.targetSchema,
-      project.mappings,
+      project.mappings!,
     );
-    // Append legacy-only issues that aren't already represented in ruleIssues path coverage.
-    // Keep both for transition: UI still reads `issues`.
     for (const li of legacy.issues) {
+      const key = legacyIssueKey(li);
+      const pair = `${li.sourcePath ?? ""}=>${li.targetPath ?? ""}`;
+      if (seen.has(key) || pathPairs.has(pair)) continue;
+      // Soft dedupe on target-only required/unmapped
+      if (
+        li.targetPath &&
+        ruleReport.issues.some(
+          (r) =>
+            r.targetPath === li.targetPath &&
+            (r.type === "unmapped_required_target" ||
+              r.type === "unmapped_optional_target"),
+        )
+      ) {
+        continue;
+      }
+      seen.add(key);
       issues.push(li);
     }
   }
 
   const summary = {
     requiredTargetFieldsMissing: ruleReport.issues.filter(
-      (i) => i.type === "unmapped_required_target",
+      (i) => i.type === "unmapped_required_target" && i.scope === "project",
     ).length,
     optionalTargetFieldsUnmapped: ruleReport.issues.filter(
       (i) => i.type === "unmapped_optional_target",
@@ -956,7 +1141,9 @@ export function validateProjectRules(
     unusedSourceFields: ruleReport.issues.filter((i) => i.type === "unused_source")
       .length,
     structurallyUnreachable: ruleReport.issues.filter(
-      (i) => i.type === "structurally_unreachable",
+      (i) =>
+        i.type === "structurally_unreachable" ||
+        i.type === "definitely_unreachable_rule",
     ).length,
     errorCount: issues.filter((i) => i.severity === "error").length,
     warningCount: issues.filter((i) => i.severity === "warning").length,

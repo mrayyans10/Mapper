@@ -3,6 +3,7 @@ export {
   validateRuleGroups,
   validateProjectRules,
   ruleIssuesToLegacyIssues,
+  buildIssueKey,
   type RuleValidationReport,
   type RuleValidationSummary,
   type ValidateRuleGroupsOptions,

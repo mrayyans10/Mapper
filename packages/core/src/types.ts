@@ -129,6 +129,7 @@ export interface PreviewReport {
     transformationDeferred?: { type: string };
   }>;
   notes?: string[];
+  warnings?: string[];
 }
 
 export interface MappingProject {

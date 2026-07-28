@@ -1,14 +1,21 @@
 import type {
+  ChildMapping,
+  ConditionAtom,
+  ConditionExpr,
+  ConditionOperator,
+  ExecutionMode,
   FieldMapping,
   MappingProject,
+  PreviewReport,
+  Rule,
+  RuleCopyMode,
+  RuleGroup,
+  RuleKind,
   SchemaTree,
   ValidationReport,
 } from "@mapping-assurance/core";
 
-async function request<T>(
-  url: string,
-  init?: RequestInit,
-): Promise<T> {
+async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
     ...init,
@@ -52,6 +59,7 @@ export const api = {
       sourceJson?: string;
       targetJson?: string;
       mappings?: FieldMapping[];
+      ruleGroups?: RuleGroup[];
       requiredOverrides?: {
         source?: Record<string, boolean>;
         target?: Record<string, boolean>;
@@ -69,6 +77,12 @@ export const api = {
       `/api/projects/${id}/validate`,
       { method: "POST", body: "{}" },
     ),
+
+  previewProject: (id: string, body?: { targetJson?: string }) =>
+    request<{ preview: PreviewReport }>(`/api/projects/${id}/preview`, {
+      method: "POST",
+      body: JSON.stringify(body ?? {}),
+    }),
 
   deleteProject: (id: string) =>
     request<void>(`/api/projects/${id}`, { method: "DELETE" }),
@@ -89,13 +103,36 @@ export const api = {
   validate: (body: {
     sourceSchema: SchemaTree;
     targetSchema: SchemaTree;
-    mappings: FieldMapping[];
+    mappings?: FieldMapping[];
+    ruleGroups?: RuleGroup[];
   }) =>
     request<{ report: ValidationReport }>("/api/validate", {
       method: "POST",
       body: JSON.stringify(body),
     }),
 
+  preview: (body: {
+    sourceJson: string;
+    targetJson?: string;
+    ruleGroups: RuleGroup[];
+  }) =>
+    request<{ preview: PreviewReport }>("/api/preview", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
   exportUrl: (id: string, format: string) =>
     `/api/projects/${id}/export/${format}`,
+};
+
+export type {
+  ChildMapping,
+  ConditionAtom,
+  ConditionExpr,
+  ConditionOperator,
+  ExecutionMode,
+  Rule,
+  RuleCopyMode,
+  RuleGroup,
+  RuleKind,
 };

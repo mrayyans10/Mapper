@@ -15,6 +15,7 @@ function rule(
     status: partial.status ?? "draft",
     condition: partial.condition,
     migrationSource: partial.migrationSource,
+    copyMode: partial.copyMode,
     ...partial,
   };
 }
@@ -71,7 +72,7 @@ describe("previewRuleGroups", () => {
     expect(report.skippedRules.some((s) => s.ruleId === "fb")).toBe(true);
   });
 
-  it("executes fallback when no normal rule matches", () => {
+  it("fallback without children is route-only by default (no silent copy)", () => {
     const groups: RuleGroup[] = [
       {
         id: "g1",
@@ -94,6 +95,7 @@ describe("previewRuleGroups", () => {
             destinationNode: "$.StandardOrders",
             kind: "fallback",
             priority: 99,
+            copyMode: "COPY_SOURCE_NODE",
           }),
         ],
       },
@@ -107,7 +109,7 @@ describe("previewRuleGroups", () => {
     });
   });
 
-  it("previews per-array-element matches (D4)", () => {
+  it("previews per-array-element matches with append (D4/P1)", () => {
     const groups: RuleGroup[] = [
       {
         id: "g1",
@@ -138,6 +140,14 @@ describe("previewRuleGroups", () => {
             destinationNode: "$.OtherProducts",
             kind: "fallback",
             priority: 50,
+            childMappings: [
+              {
+                id: "c2",
+                sourcePath: "sku",
+                targetPath: "productCode",
+                status: "draft",
+              },
+            ],
           }),
         ],
       },
@@ -156,13 +166,13 @@ describe("previewRuleGroups", () => {
     expect(
       report.matchedRules.find((m) => m.ruleId === "fb")?.arrayIndex,
     ).toBe(1);
-    expect(
-      (report.resultObject as { PrimaryProducts?: { productCode?: string } })
-        .PrimaryProducts?.productCode,
-    ).toBe("A");
+    expect(report.resultObject).toEqual({
+      PrimaryProducts: [{ productCode: "A" }],
+      OtherProducts: [{ productCode: "B" }],
+    });
   });
 
-  it("copies direct legacy mappings and notes deferred transformations", () => {
+  it("copies direct legacy mappings and warns on deferred transformations", () => {
     const groups: RuleGroup[] = [
       {
         id: "rg",
@@ -212,9 +222,6 @@ describe("previewRuleGroups", () => {
       contactEmail: "ada@example.com",
       CorporateCustomer: { legalName: "Ada" },
     });
-    expect(report.notes.some((n) => n.includes("uppercase"))).toBe(true);
-    expect(
-      report.traces.some((t) => t.transformationDeferred?.type === "uppercase"),
-    ).toBe(true);
+    expect(report.warnings.some((n) => /NOT executed/i.test(n))).toBe(true);
   });
 });

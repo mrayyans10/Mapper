@@ -17,6 +17,7 @@ export function ValidationReportView({ report }: ValidationReportViewProps) {
   }
 
   const s = report.summary;
+  const ruleIssues = report.ruleIssues;
 
   return (
     <section className="panel">
@@ -30,7 +31,7 @@ export function ValidationReportView({ report }: ValidationReportViewProps) {
       <div className="summary-grid">
         <div className="stat">
           <div className="value">{s.requiredTargetFieldsMissing}</div>
-          <div className="label">Required target fields missing</div>
+          <div className="label">Required missing (project-wide)</div>
         </div>
         <div className="stat">
           <div className="value">{s.optionalTargetFieldsUnmapped}</div>
@@ -50,12 +51,40 @@ export function ValidationReportView({ report }: ValidationReportViewProps) {
         </div>
         <div className="stat">
           <div className="value">{s.structurallyUnreachable}</div>
-          <div className="label">Structurally unreachable</div>
+          <div className="label">Unreachable / structural</div>
         </div>
       </div>
 
       <h2 style={{ marginTop: "0.25rem" }}>Detailed issues</h2>
-      {report.issues.length === 0 ? (
+      {ruleIssues && ruleIssues.length > 0 ? (
+        <div className="issue-list">
+          {ruleIssues.map((issue, idx) => (
+            <article
+              key={issue.issueKey ?? `${issue.type}-${idx}`}
+              className={`issue ${issue.severity}`}
+            >
+              <div className="issue-top">
+                <span className={`badge ${issue.severity}`}>{issue.severity}</span>
+                <span className="mono muted">{issue.type}</span>
+                {issue.scope ? (
+                  <span className="badge info">{issue.scope}</span>
+                ) : null}
+                {issue.ruleId ? (
+                  <span className="mono">rule: {issue.ruleId}</span>
+                ) : null}
+                {issue.sourcePath ? (
+                  <span className="mono">src: {issue.sourcePath}</span>
+                ) : null}
+                {issue.targetPath ? (
+                  <span className="mono">tgt: {issue.targetPath}</span>
+                ) : null}
+              </div>
+              <p>{issue.message}</p>
+              <p className="muted">Suggested: {issue.recommendedFix}</p>
+            </article>
+          ))}
+        </div>
+      ) : report.issues.length === 0 ? (
         <p className="muted">No issues found.</p>
       ) : (
         <div className="issue-list">

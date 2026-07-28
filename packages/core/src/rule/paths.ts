@@ -230,3 +230,117 @@ export function resolveConditionValues(
   // Evaluate relative path as if relativeRoot were the document root.
   return getPathValues(ctx.relativeRoot, `$.${cleaned}`);
 }
+
+/**
+ * Canonicalize path for equivalence checks (V2).
+ * `$.arr`, `$.arr[*]`, and child forms under arrays are normalized consistently:
+ * - trailing `[*]` retained for item roots
+ * - `$.arr.field` and `$.arr[*].field` share the same coverage key `$.arr[*].field`
+ */
+export function normalizeArrayPath(path: string): string {
+  if (!isAbsolutePath(path) || path === "$") return path;
+  const segments = parseAbsolutePath(path);
+  const out: string[] = [];
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i]!;
+    const next = segments[i + 1];
+    // If this segment is followed by a property and is not already wildcard,
+    // we cannot know it's an array without schema — keep as-is.
+    // Coverage expansion handles schema-aware cases separately.
+    if (seg.wildcard) {
+      out.push(`${seg.key}[*]`);
+    } else {
+      out.push(seg.key);
+    }
+    void next;
+  }
+  return out.length === 0 ? "$" : `$.${out.join(".")}`;
+}
+
+/**
+ * Expand equivalent path forms for coverage / schema lookup (V2).
+ * Includes both with and without `[*]` between parent and child.
+ */
+export function expandEquivalentPaths(path: string): string[] {
+  if (!isAbsolutePath(path) || path === "$") return [path];
+  const variants = new Set<string>([path, normalizeArrayPath(path)]);
+
+  // Insert [*] before each property segment after an array-looking parent name.
+  // Also strip [*] forms.
+  const body = path.startsWith("$.") ? path.slice(2) : path;
+  const parts = body.split(".");
+  // Variant: add [*] to segments that lack it when a following segment exists
+  for (let i = 0; i < parts.length - 1; i++) {
+    const p = parts[i]!;
+    if (!p.endsWith("[*]")) {
+      const next = [...parts];
+      next[i] = `${p}[*]`;
+      variants.add(`$.${next.join(".")}`);
+    }
+  }
+  // Variant: remove [*]
+  const stripped = parts.map((p) => p.replace(/\[\*\]$/, ""));
+  variants.add(`$.${stripped.join(".")}`);
+
+  // Parent array forms
+  if (path.endsWith("[*]")) {
+    variants.add(path.slice(0, -3));
+  } else {
+    variants.add(`${path}[*]`);
+  }
+
+  return [...variants];
+}
+
+/** True if two absolute paths refer to the same location under array-path normalization. */
+export function pathsEquivalent(a: string, b: string): boolean {
+  const ea = new Set(expandEquivalentPaths(a));
+  for (const x of expandEquivalentPaths(b)) {
+    if (ea.has(x)) return true;
+  }
+  return false;
+}
+
+/**
+ * Join with optional schema-aware array insertion (V2).
+ * When `parentIsArray` and parent path lacks `[*]`, inserts `[*]` before the relative child.
+ */
+export function joinPathAware(
+  nodePath: AbsolutePath,
+  relativePath: RelativePath,
+  parentIsArray?: boolean,
+): AbsolutePath {
+  let base = nodePath;
+  if (parentIsArray && !base.endsWith("[*]") && base !== "$") {
+    base = `${base}[*]`;
+  }
+  return joinPath(base, relativePath);
+}
+
+export function lookupSchemaPath(
+  paths: Iterable<string>,
+  absolutePath: string,
+): string | undefined {
+  const set = paths instanceof Set ? paths : new Set(paths);
+  for (const candidate of expandEquivalentPaths(absolutePath)) {
+    if (set.has(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+export function schemaHasPath(
+  schemaPaths: Iterable<string>,
+  absolutePath: string,
+): boolean {
+  return lookupSchemaPath(schemaPaths, absolutePath) !== undefined;
+}
+
+export function markMappedPath(mapped: Set<string>, absolutePath: string): void {
+  for (const v of expandEquivalentPaths(absolutePath)) {
+    mapped.add(v);
+  }
+}
+
+export function isMappedPath(mapped: Set<string>, absolutePath: string): boolean {
+  return lookupSchemaPath(mapped, absolutePath) !== undefined;
+}

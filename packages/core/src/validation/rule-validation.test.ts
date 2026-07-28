@@ -97,7 +97,7 @@ describe("validateRuleGroups", () => {
     );
   });
 
-  it("detects unreachable rules after unconditional in first-match", () => {
+  it("detects definitely unreachable rules after unconditional in first-match", () => {
     const groups: RuleGroup[] = [
       {
         id: "g1",
@@ -128,11 +128,11 @@ describe("validateRuleGroups", () => {
     const report = validateRuleGroups(groups, source, target);
     expect(
       report.issues.some(
-        (i) => i.type === "unreachable_rule" && i.ruleId === "later",
+        (i) =>
+          i.type === "definitely_unreachable_rule" && i.ruleId === "later",
       ),
     ).toBe(true);
   });
-
   it("detects datatype mismatch on direct legacy rules", () => {
     const groups: RuleGroup[] = [
       {

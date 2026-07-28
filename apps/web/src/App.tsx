@@ -5,12 +5,16 @@ import {
   type FieldMapping,
   type MappingProject,
   type MappingStatus,
+  type PreviewReport,
+  type RuleGroup,
   type SchemaTree,
   type ValidationReport,
 } from "@mapping-assurance/core";
 import { api } from "./api/client";
 import { JsonInputPanel } from "./components/JsonInputPanel";
 import { MappingPanel } from "./components/MappingPanel";
+import { PreviewPanel } from "./components/PreviewPanel";
+import { RuleWorkbench } from "./components/RuleWorkbench";
 import { SchemaTreeView } from "./components/SchemaTreeView";
 import { ValidationReportView } from "./components/ValidationReportView";
 
@@ -60,7 +64,11 @@ export default function App() {
   const [sourceSchema, setSourceSchema] = useState<SchemaTree | null>(null);
   const [targetSchema, setTargetSchema] = useState<SchemaTree | null>(null);
   const [mappings, setMappings] = useState<FieldMapping[]>([]);
+  const [ruleGroups, setRuleGroups] = useState<RuleGroup[]>([]);
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null);
   const [report, setReport] = useState<ValidationReport | null>(null);
+  const [preview, setPreview] = useState<PreviewReport | null>(null);
   const [sourceSelected, setSourceSelected] = useState<string | null>(null);
   const [targetSelected, setTargetSelected] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -142,6 +150,7 @@ export default function App() {
           sourceJson,
           targetJson,
           mappings,
+          ruleGroups,
           requiredOverrides: {
             source: Object.fromEntries(
               Object.entries(sourceSchema.nodes).map(([p, n]) => [p, n.required]),
@@ -159,12 +168,46 @@ export default function App() {
           sourceSchema,
           targetSchema,
           mappings,
+          ruleGroups: ruleGroups.length > 0 ? ruleGroups : undefined,
         });
         setReport(data.report);
         showToast("Validation report generated");
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Validation failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runPreview() {
+    setError(null);
+    if (ruleGroups.length === 0) {
+      setError("Add at least one rule group before preview.");
+      return;
+    }
+    setBusy(true);
+    try {
+      if (project) {
+        await api.updateProject(project.id, {
+          sourceJson,
+          targetJson,
+          mappings,
+          ruleGroups,
+        });
+        const data = await api.previewProject(project.id);
+        setPreview(data.preview);
+      } else {
+        const data = await api.preview({
+          sourceJson,
+          targetJson,
+          ruleGroups,
+        });
+        setPreview(data.preview);
+      }
+      showToast("Preview generated");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Preview failed");
     } finally {
       setBusy(false);
     }
@@ -178,7 +221,9 @@ export default function App() {
     setSourceSchema(p.sourceSchema);
     setTargetSchema(p.targetSchema);
     setMappings(p.mappings);
+    setRuleGroups(p.ruleGroups ?? []);
     setReport(p.validationReport);
+    setPreview(null);
     setSourceError(null);
     setTargetError(null);
   }
@@ -204,6 +249,7 @@ export default function App() {
           sourceJson,
           targetJson,
           mappings,
+          ruleGroups,
           requiredOverrides: {
             source: Object.fromEntries(
               Object.entries(nextSourceSchema.nodes).map(([p, n]) => [
@@ -230,6 +276,7 @@ export default function App() {
         });
         const updated = await api.updateProject(created.project.id, {
           mappings,
+          ruleGroups,
           requiredOverrides: {
             target: Object.fromEntries(
               Object.entries(nextTargetSchema.nodes).map(([p, n]) => [
@@ -381,6 +428,14 @@ export default function App() {
             onClick={() => void runValidation()}
           >
             Validate
+          </button>
+          <button
+            type="button"
+            className="btn"
+            disabled={busy || ruleGroups.length === 0}
+            onClick={() => void runPreview()}
+          >
+            Preview
           </button>
           <button
             type="button"
@@ -545,7 +600,23 @@ export default function App() {
         />
       </div>
 
+      <RuleWorkbench
+        ruleGroups={ruleGroups}
+        selectedGroupId={selectedGroupId}
+        selectedRuleId={selectedRuleId}
+        sourceSelected={sourceSelected}
+        targetSelected={targetSelected}
+        onSelectGroup={setSelectedGroupId}
+        onSelectRule={setSelectedRuleId}
+        onChange={(groups) => {
+          setRuleGroups(groups);
+          setReport(null);
+          setPreview(null);
+        }}
+      />
+
       <ValidationReportView report={report} />
+      <PreviewPanel preview={preview} />
 
       {toast ? <div className="toast">{toast}</div> : null}
     </div>

@@ -24,6 +24,17 @@ export type RuleKind = "unconditional" | "conditional" | "fallback";
 
 export type MigrationSource = "FIELD_MAPPING_V1";
 
+/**
+ * How a matched routing rule materializes output in Preview (P2).
+ * - ROUTE_ONLY — record destination only; do not copy payload
+ * - COPY_SOURCE_NODE — copy the entire source node value to destination
+ * - APPLY_CHILD_MAPPINGS — apply owned child field mappings only
+ *
+ * Default resolution: childMappings.length > 0 → APPLY_CHILD_MAPPINGS, else ROUTE_ONLY.
+ * Direct (legacy) rules always behave as COPY_SOURCE_NODE.
+ */
+export type RuleCopyMode = "ROUTE_ONLY" | "COPY_SOURCE_NODE" | "APPLY_CHILD_MAPPINGS";
+
 export type ConditionOperator =
   | "=="
   | "!="
@@ -120,6 +131,11 @@ export interface Rule {
    * Paths are relative to sourceNode / destinationNode (D7).
    */
   childMappings: ChildMapping[];
+  /**
+   * Explicit materialization mode for Preview (P2).
+   * When omitted, resolved by {@link resolveRuleCopyMode}.
+   */
+  copyMode?: RuleCopyMode;
   /** Set when created by v1→v2 migration (D2). */
   migrationSource?: MigrationSource;
   metadata?: Record<string, unknown>;
@@ -171,7 +187,7 @@ export type RuleValidationIssueType =
   | "duplicate_rule"
   | "conflicting_rule"
   | "overlapping_rule"
-  | "unreachable_rule"
+  | "definitely_unreachable_rule"
   | "missing_fallback"
   | "multiple_enabled_fallbacks"
   | "datatype_mismatch"
@@ -184,7 +200,15 @@ export type RuleValidationIssueType =
   | "unused_mapping"
   | "unused_source"
   | "invariant_violation"
-  | "legacy_direct_with_children";
+  | "legacy_direct_with_children"
+  /** @deprecated Use definitely_unreachable_rule (V4). */
+  | "unreachable_rule";
+
+/** Where a required-field finding applies (V3). */
+export type RequiredFieldScope =
+  | "project"
+  | "route"
+  | "conditional_route";
 
 export interface RuleValidationIssue {
   severity: "error" | "warning" | "info";
@@ -194,6 +218,10 @@ export interface RuleValidationIssue {
   childMappingId?: string;
   sourcePath?: string;
   targetPath?: string;
+  /** V3: scopes required-field findings. */
+  scope?: RequiredFieldScope;
   message: string;
   recommendedFix: string;
+  /** Stable key for deduplication (V5). */
+  issueKey?: string;
 }

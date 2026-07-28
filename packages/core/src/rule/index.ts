@@ -31,16 +31,28 @@ export type {
 
 export {
   PathError,
+  expandEquivalentPaths,
   expandSourceContexts,
   getPathValue,
   getPathValues,
   isAbsolutePath,
+  isMappedPath,
   isRelativePath,
   joinPath,
+  joinPathAware,
+  lookupSchemaPath,
+  markMappedPath,
+  normalizeArrayPath,
   parseAbsolutePath,
+  pathsEquivalent,
   resolveChildPaths,
   resolveConditionValues,
+  schemaHasPath,
 } from "./paths.js";
+
+export { resolveRuleCopyMode } from "./copy-mode.js";
+export type { RuleCopyMode } from "./types.js";
+export type { RequiredFieldScope } from "./types.js";
 
 export {
   ConditionEvalError,

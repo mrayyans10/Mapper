@@ -53,6 +53,7 @@ const updateBodySchema = z.object({
   sourceJson: z.string().min(1).optional(),
   targetJson: z.string().min(1).optional(),
   mappings: z.array(mappingSchema).optional(),
+  ruleGroups: z.array(z.any()).optional(),
   requiredOverrides: z
     .object({
       source: z.record(z.boolean()).optional(),
@@ -209,11 +210,6 @@ export function createProjectsRouter(): Router {
       return;
     }
 
-    const shouldValidate =
-      parsed.data.runValidation === true ||
-      parsed.data.mappings !== undefined ||
-      parsed.data.requiredOverrides !== undefined;
-
     let project: MappingProject = {
       ...existing,
       name: parsed.data.name ?? existing.name,
@@ -225,11 +221,14 @@ export function createProjectsRouter(): Router {
       updatedAt: new Date().toISOString(),
     };
 
-    // Dual-write: keep ruleGroups in sync for legacy-only projects when mappings change.
-    if (
+    if (parsed.data.ruleGroups) {
+      project.ruleGroups = parsed.data.ruleGroups as RuleGroup[];
+      project.schemaVersion = 2;
+    } else if (
       parsed.data.mappings !== undefined &&
       onlyLegacyRuleGroups(existing.ruleGroups)
     ) {
+      // Dual-write: keep ruleGroups in sync for legacy-only projects when mappings change.
       project = migrateProjectV1toV2(
         { ...project, schemaVersion: 1 },
         { force: true },
@@ -237,6 +236,12 @@ export function createProjectsRouter(): Router {
     } else if (project.schemaVersion < 2) {
       project = migrateProjectV1toV2(project);
     }
+
+    const shouldValidate =
+      parsed.data.runValidation === true ||
+      parsed.data.mappings !== undefined ||
+      parsed.data.ruleGroups !== undefined ||
+      parsed.data.requiredOverrides !== undefined;
 
     project.validationReport = shouldValidate
       ? project.ruleGroups.length > 0
@@ -247,7 +252,13 @@ export function createProjectsRouter(): Router {
               targetSchema: schemas.targetSchema,
               mappings,
             },
-            { includeLegacyMappingValidation: mappings.length > 0 },
+            {
+              includeLegacyMappingValidation:
+                mappings.length > 0 &&
+                !project.ruleGroups.some((g) =>
+                  g.rules.some((r) => r.migrationSource === "FIELD_MAPPING_V1"),
+                ),
+            },
           )
         : validateMappings(
             schemas.sourceSchema,
@@ -270,7 +281,11 @@ export function createProjectsRouter(): Router {
     const report =
       existing.ruleGroups.length > 0
         ? validateProjectRules(existing, {
-            includeLegacyMappingValidation: existing.mappings.length > 0,
+            includeLegacyMappingValidation:
+              existing.mappings.length > 0 &&
+              !existing.ruleGroups.some((g) =>
+                g.rules.some((r) => r.migrationSource === "FIELD_MAPPING_V1"),
+              ),
           })
         : validateMappings(
             existing.sourceSchema,

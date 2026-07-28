@@ -22,7 +22,7 @@ test("vertical slice: infer, map, validate, save", async ({ page }) => {
 
   await page.getByRole("button", { name: "Validate" }).click();
   await expect(page.getByText("Validation report generated")).toBeVisible();
-  await expect(page.getByText("Required target fields missing")).toBeVisible();
+  await expect(page.getByText("Required missing (project-wide)")).toBeVisible();
 
   await page.getByLabel("Project name").fill("E2E Customer Mapping");
   await page.getByRole("button", { name: "Save project" }).click();
