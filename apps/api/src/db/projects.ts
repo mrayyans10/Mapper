@@ -4,9 +4,11 @@ import path from "node:path";
 import type {
   FieldMapping,
   MappingProject,
+  RuleGroup,
   SchemaTree,
   ValidationReport,
 } from "@mapping-assurance/core";
+import { PROJECT_SCHEMA_VERSION_V1 } from "@mapping-assurance/core";
 
 export interface ProjectRow {
   id: string;
@@ -19,6 +21,9 @@ export interface ProjectRow {
   validation_report: string | null;
   created_at: string;
   updated_at: string;
+  /** Present after DB migration v2 columns are applied; absent on legacy DBs. */
+  schema_version?: number | null;
+  rule_groups?: string | null;
 }
 
 let db: Database.Database | null = null;
@@ -59,14 +64,28 @@ export function resetDbForTests(dbPath: string): Database.Database {
 }
 
 export function rowToProject(row: ProjectRow): MappingProject {
+  const mappings = JSON.parse(row.mappings) as FieldMapping[];
+  const schemaVersion =
+    row.schema_version === 2 ? 2 : PROJECT_SCHEMA_VERSION_V1;
+  let ruleGroups: RuleGroup[] = [];
+  if (row.rule_groups) {
+    try {
+      ruleGroups = JSON.parse(row.rule_groups) as RuleGroup[];
+    } catch {
+      ruleGroups = [];
+    }
+  }
+
   return {
     id: row.id,
     name: row.name,
+    schemaVersion,
     sourceJson: row.source_json,
     targetJson: row.target_json,
     sourceSchema: JSON.parse(row.source_schema) as SchemaTree,
     targetSchema: JSON.parse(row.target_schema) as SchemaTree,
-    mappings: JSON.parse(row.mappings) as FieldMapping[],
+    ruleGroups,
+    mappings,
     validationReport: row.validation_report
       ? (JSON.parse(row.validation_report) as ValidationReport)
       : null,

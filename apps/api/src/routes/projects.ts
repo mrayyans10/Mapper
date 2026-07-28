@@ -132,10 +132,12 @@ export function createProjectsRouter(): Router {
     const project: MappingProject = {
       id: randomUUID(),
       name: parsed.data.name,
+      schemaVersion: 1,
       sourceJson: parsed.data.sourceJson,
       targetJson: parsed.data.targetJson,
       sourceSchema: schemas.sourceSchema,
       targetSchema: schemas.targetSchema,
+      ruleGroups: [],
       mappings: [],
       validationReport: null,
       createdAt: now,

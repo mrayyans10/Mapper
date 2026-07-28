@@ -103,11 +103,12 @@ npm run test:e2e
 
 ## Architecture approval (Rule Platform)
 
-Next product direction (rule-based mapping assurance) is documented for review:
+Rule Platform redesign is **approved with changes**. Step 1 (domain interfaces + migration/invariant/test design) is documented here:
 
 - [`docs/ARCHITECTURE_APPROVAL_RULE_PLATFORM.md`](docs/ARCHITECTURE_APPROVAL_RULE_PLATFORM.md)
+- [`docs/STEP1_RULE_DOMAIN_DESIGN.md`](docs/STEP1_RULE_DOMAIN_DESIGN.md)
 
-No Rule Engine implementation starts until that document is approved.
+UI and Rule Engine runtime are intentionally not started until Step 2.
 
 ## Out of scope (intentionally)
 
