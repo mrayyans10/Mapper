@@ -1,0 +1,16 @@
+node_modules/
+dist/
+build/
+coverage/
+*.sqlite
+*.sqlite-*
+apps/api/data/
+.DS_Store
+.env
+.env.local
+playwright-report/
+test-results/
+.vite/
+*.log
+.turbo/
+*.tsbuildinfo

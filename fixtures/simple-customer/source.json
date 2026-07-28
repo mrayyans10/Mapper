@@ -1,0 +1,7 @@
+{
+  "customerId": "C-1001",
+  "fullName": "Ada Lovelace",
+  "email": "ada@example.com",
+  "age": 36,
+  "active": true
+}

@@ -1,0 +1,27 @@
+{
+  "name": "mapping-assurance",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mapping Assurance MVP — deterministic JSON field mapping validation",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run build:core && concurrently -n core,api,web -c blue,green,magenta \"npm run dev -w @mapping-assurance/core\" \"npm run dev -w @mapping-assurance/api\" \"npm run dev -w @mapping-assurance/web\"",
+    "build": "npm run build -w @mapping-assurance/core && npm run build -w @mapping-assurance/api && npm run build -w @mapping-assurance/web",
+    "build:core": "npm run build -w @mapping-assurance/core",
+    "test": "npm run test -w @mapping-assurance/core",
+    "test:e2e": "playwright test",
+    "lint": "npm run build:core && tsc -b --pretty false",
+    "start": "npm run start -w @mapping-assurance/api"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.51.0",
+    "concurrently": "^9.1.2",
+    "typescript": "^5.8.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

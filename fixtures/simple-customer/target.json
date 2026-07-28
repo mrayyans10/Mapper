@@ -1,0 +1,8 @@
+{
+  "id": "C-1001",
+  "name": "Ada Lovelace",
+  "contactEmail": "ada@example.com",
+  "years": 36,
+  "isActive": true,
+  "tier": "gold"
+}

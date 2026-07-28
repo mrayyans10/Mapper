@@ -1,0 +1,8 @@
+{
+  "id": "forty-two",
+  "meta": "created",
+  "values": {
+    "a": 1
+  },
+  "requiredName": "must-map"
+}
