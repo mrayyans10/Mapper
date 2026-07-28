@@ -8,7 +8,12 @@ import type {
   SchemaTree,
   ValidationReport,
 } from "@mapping-assurance/core";
-import { PROJECT_SCHEMA_VERSION_V1 } from "@mapping-assurance/core";
+import {
+  PROJECT_SCHEMA_VERSION_V1,
+  PROJECT_SCHEMA_VERSION_V2,
+  migrateProjectV1toV2,
+  needsMigration,
+} from "@mapping-assurance/core";
 
 export interface ProjectRow {
   id: string;
@@ -21,23 +26,29 @@ export interface ProjectRow {
   validation_report: string | null;
   created_at: string;
   updated_at: string;
-  /** Present after DB migration v2 columns are applied; absent on legacy DBs. */
   schema_version?: number | null;
   rule_groups?: string | null;
 }
 
 let db: Database.Database | null = null;
 
-export function getDb(dbPath?: string): Database.Database {
-  if (db) return db;
-  const resolved =
-    dbPath ??
-    process.env.MAPPING_ASSURANCE_DB ??
-    path.join(process.cwd(), "data", "mapping-assurance.sqlite");
-  fs.mkdirSync(path.dirname(resolved), { recursive: true });
-  db = new Database(resolved);
-  db.pragma("journal_mode = WAL");
-  db.exec(`
+function tryAddColumn(
+  database: Database.Database,
+  ddl: string,
+): void {
+  try {
+    database.exec(ddl);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!/duplicate column/i.test(message)) {
+      throw err;
+    }
+  }
+}
+
+/** Idempotent additive schema upgrades (rollback-safe). */
+export function ensureProjectSchema(database: Database.Database): void {
+  database.exec(`
     CREATE TABLE IF NOT EXISTS projects (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -51,6 +62,26 @@ export function getDb(dbPath?: string): Database.Database {
       updated_at TEXT NOT NULL
     );
   `);
+  tryAddColumn(
+    database,
+    `ALTER TABLE projects ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 1`,
+  );
+  tryAddColumn(
+    database,
+    `ALTER TABLE projects ADD COLUMN rule_groups TEXT NOT NULL DEFAULT '[]'`,
+  );
+}
+
+export function getDb(dbPath?: string): Database.Database {
+  if (db) return db;
+  const resolved =
+    dbPath ??
+    process.env.MAPPING_ASSURANCE_DB ??
+    path.join(process.cwd(), "data", "mapping-assurance.sqlite");
+  fs.mkdirSync(path.dirname(resolved), { recursive: true });
+  db = new Database(resolved);
+  db.pragma("journal_mode = WAL");
+  ensureProjectSchema(db);
   return db;
 }
 
@@ -66,7 +97,10 @@ export function resetDbForTests(dbPath: string): Database.Database {
 export function rowToProject(row: ProjectRow): MappingProject {
   const mappings = JSON.parse(row.mappings) as FieldMapping[];
   const schemaVersion =
-    row.schema_version === 2 ? 2 : PROJECT_SCHEMA_VERSION_V1;
+    row.schema_version === PROJECT_SCHEMA_VERSION_V2
+      ? PROJECT_SCHEMA_VERSION_V2
+      : PROJECT_SCHEMA_VERSION_V1;
+
   let ruleGroups: RuleGroup[] = [];
   if (row.rule_groups) {
     try {
@@ -76,7 +110,7 @@ export function rowToProject(row: ProjectRow): MappingProject {
     }
   }
 
-  return {
+  let project: MappingProject = {
     id: row.id,
     name: row.name,
     schemaVersion,
@@ -92,13 +126,28 @@ export function rowToProject(row: ProjectRow): MappingProject {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+
+  // Migrate-on-read: if still v1, or v2 with empty ruleGroups but mappings present.
+  if (
+    needsMigration(project) ||
+    (project.schemaVersion === PROJECT_SCHEMA_VERSION_V2 &&
+      project.ruleGroups.length === 0 &&
+      project.mappings.length > 0)
+  ) {
+    project = migrateProjectV1toV2(project, {
+      force:
+        project.schemaVersion === PROJECT_SCHEMA_VERSION_V2 &&
+        project.ruleGroups.length === 0 &&
+        project.mappings.length > 0,
+    });
+  }
+
+  return project;
 }
 
 export function listProjects(): MappingProject[] {
   const rows = getDb()
-    .prepare(
-      `SELECT * FROM projects ORDER BY updated_at DESC`,
-    )
+    .prepare(`SELECT * FROM projects ORDER BY updated_at DESC`)
     .all() as ProjectRow[];
   return rows.map(rowToProject);
 }
@@ -110,13 +159,22 @@ export function getProject(id: string): MappingProject | null {
   return row ? rowToProject(row) : null;
 }
 
+function persistColumns(project: MappingProject) {
+  return {
+    schemaVersion: project.schemaVersion ?? PROJECT_SCHEMA_VERSION_V1,
+    ruleGroupsJson: JSON.stringify(project.ruleGroups ?? []),
+  };
+}
+
 export function insertProject(project: MappingProject): MappingProject {
+  const { schemaVersion, ruleGroupsJson } = persistColumns(project);
   getDb()
     .prepare(
       `INSERT INTO projects (
         id, name, source_json, target_json, source_schema, target_schema,
-        mappings, validation_report, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        mappings, validation_report, created_at, updated_at,
+        schema_version, rule_groups
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       project.id,
@@ -131,11 +189,14 @@ export function insertProject(project: MappingProject): MappingProject {
         : null,
       project.createdAt,
       project.updatedAt,
+      schemaVersion,
+      ruleGroupsJson,
     );
   return project;
 }
 
 export function updateProjectRecord(project: MappingProject): MappingProject {
+  const { schemaVersion, ruleGroupsJson } = persistColumns(project);
   getDb()
     .prepare(
       `UPDATE projects SET
@@ -146,7 +207,9 @@ export function updateProjectRecord(project: MappingProject): MappingProject {
         target_schema = ?,
         mappings = ?,
         validation_report = ?,
-        updated_at = ?
+        updated_at = ?,
+        schema_version = ?,
+        rule_groups = ?
       WHERE id = ?`,
     )
     .run(
@@ -160,9 +223,20 @@ export function updateProjectRecord(project: MappingProject): MappingProject {
         ? JSON.stringify(project.validationReport)
         : null,
       project.updatedAt,
+      schemaVersion,
+      ruleGroupsJson,
       project.id,
     );
   return project;
+}
+
+/** Persist an in-memory migrated project (dual-write). */
+export function persistMigratedProject(project: MappingProject): MappingProject {
+  const migrated = migrateProjectV1toV2(project);
+  return updateProjectRecord({
+    ...migrated,
+    updatedAt: new Date().toISOString(),
+  });
 }
 
 export function deleteProject(id: string): boolean {

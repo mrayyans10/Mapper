@@ -8,10 +8,12 @@ import {
   exportMappingsJson,
   exportValidationReportJson,
   inferSchema,
+  migrateProjectV1toV2,
   parseJsonDocument,
   validateMappings,
   type FieldMapping,
   type MappingProject,
+  type RuleGroup,
 } from "@mapping-assurance/core";
 import {
   deleteProject,
@@ -20,6 +22,13 @@ import {
   listProjects,
   updateProjectRecord,
 } from "../db/projects.js";
+
+function onlyLegacyRuleGroups(groups: RuleGroup[]): boolean {
+  if (groups.length === 0) return true;
+  return groups.every((g) =>
+    g.rules.every((r) => r.migrationSource === "FIELD_MAPPING_V1"),
+  );
+}
 
 const mappingSchema = z.object({
   id: z.string().min(1),
@@ -132,7 +141,7 @@ export function createProjectsRouter(): Router {
     const project: MappingProject = {
       id: randomUUID(),
       name: parsed.data.name,
-      schemaVersion: 1,
+      schemaVersion: 2,
       sourceJson: parsed.data.sourceJson,
       targetJson: parsed.data.targetJson,
       sourceSchema: schemas.sourceSchema,
@@ -198,7 +207,7 @@ export function createProjectsRouter(): Router {
       ? validateMappings(schemas.sourceSchema, schemas.targetSchema, mappings)
       : existing.validationReport;
 
-    const project: MappingProject = {
+    let project: MappingProject = {
       ...existing,
       name: parsed.data.name ?? existing.name,
       sourceJson,
@@ -209,6 +218,19 @@ export function createProjectsRouter(): Router {
       validationReport,
       updatedAt: new Date().toISOString(),
     };
+
+    // Dual-write: keep ruleGroups in sync for legacy-only projects when mappings change.
+    if (
+      parsed.data.mappings !== undefined &&
+      onlyLegacyRuleGroups(existing.ruleGroups)
+    ) {
+      project = migrateProjectV1toV2(
+        { ...project, schemaVersion: 1 },
+        { force: true },
+      );
+    } else if (project.schemaVersion < 2) {
+      project = migrateProjectV1toV2(project);
+    }
 
     updateProjectRecord(project);
     res.json({ project });

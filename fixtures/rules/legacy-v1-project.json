@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "name": "legacy-v1-sample",
+  "mappings": [
+    {
+      "id": "map_email",
+      "sourcePath": "$.email",
+      "targetPath": "$.contactEmail",
+      "status": "draft",
+      "rationale": "direct copy"
+    },
+    {
+      "id": "map_age",
+      "sourcePath": "$.age",
+      "targetPath": "$.years",
+      "status": "reviewed",
+      "transformationNote": "identity"
+    }
+  ]
+}

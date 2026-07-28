@@ -103,12 +103,13 @@ npm run test:e2e
 
 ## Architecture approval (Rule Platform)
 
-Rule Platform redesign is **approved with changes**. Step 1 (domain interfaces + migration/invariant/test design) is documented here:
+Rule Platform redesign is **approved**. Progress:
 
-- [`docs/ARCHITECTURE_APPROVAL_RULE_PLATFORM.md`](docs/ARCHITECTURE_APPROVAL_RULE_PLATFORM.md)
-- [`docs/STEP1_RULE_DOMAIN_DESIGN.md`](docs/STEP1_RULE_DOMAIN_DESIGN.md)
+- Step 1: [`docs/STEP1_RULE_DOMAIN_DESIGN.md`](docs/STEP1_RULE_DOMAIN_DESIGN.md)
+- Step 2 (migration + Rule Engine): [`docs/STEP2_RULE_ENGINE.md`](docs/STEP2_RULE_ENGINE.md)
+- Approval record: [`docs/ARCHITECTURE_APPROVAL_RULE_PLATFORM.md`](docs/ARCHITECTURE_APPROVAL_RULE_PLATFORM.md)
 
-UI and Rule Engine runtime are intentionally not started until Step 2.
+UI Rule editor is intentionally not started yet.
 
 ## Out of scope (intentionally)
 

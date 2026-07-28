@@ -71,8 +71,22 @@ export interface ChildMapping {
   /** Relative to Rule.destinationNode (canonical). */
   targetPath: string;
   transformationNote?: string;
+  /**
+   * Optional transformation extension point.
+   * Declared for future engines; Step 2 does **not** execute transformations.
+   */
+  transformation?: TransformationRef;
   rationale?: string;
   status: MappingStatus;
+}
+
+/**
+ * Opaque transform reference for future execution engines.
+ * `type` is an application-defined identifier (e.g. "trim", "lookup", "script").
+ */
+export interface TransformationRef {
+  type: string;
+  config?: Record<string, unknown>;
 }
 
 /**
