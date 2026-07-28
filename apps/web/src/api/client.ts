@@ -1,0 +1,101 @@
+import type {
+  FieldMapping,
+  MappingProject,
+  SchemaTree,
+  ValidationReport,
+} from "@mapping-assurance/core";
+
+async function request<T>(
+  url: string,
+  init?: RequestInit,
+): Promise<T> {
+  const response = await fetch(url, {
+    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    ...init,
+  });
+  if (!response.ok) {
+    let message = `Request failed (${response.status})`;
+    try {
+      const body = (await response.json()) as { error?: unknown };
+      if (typeof body.error === "string") message = body.error;
+      else if (body.error) message = JSON.stringify(body.error);
+    } catch {
+      // ignore
+    }
+    throw new Error(message);
+  }
+  if (response.status === 204) return undefined as T;
+  return (await response.json()) as T;
+}
+
+export const api = {
+  listProjects: () =>
+    request<{ projects: MappingProject[] }>("/api/projects"),
+
+  getProject: (id: string) =>
+    request<{ project: MappingProject }>(`/api/projects/${id}`),
+
+  createProject: (body: {
+    name: string;
+    sourceJson: string;
+    targetJson: string;
+  }) =>
+    request<{ project: MappingProject }>("/api/projects", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  updateProject: (
+    id: string,
+    body: {
+      name?: string;
+      sourceJson?: string;
+      targetJson?: string;
+      mappings?: FieldMapping[];
+      requiredOverrides?: {
+        source?: Record<string, boolean>;
+        target?: Record<string, boolean>;
+      };
+      runValidation?: boolean;
+    },
+  ) =>
+    request<{ project: MappingProject }>(`/api/projects/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+
+  validateProject: (id: string) =>
+    request<{ project: MappingProject; report: ValidationReport }>(
+      `/api/projects/${id}/validate`,
+      { method: "POST", body: "{}" },
+    ),
+
+  deleteProject: (id: string) =>
+    request<void>(`/api/projects/${id}`, { method: "DELETE" }),
+
+  infer: (body: {
+    sourceJson: string;
+    targetJson: string;
+    requiredOverrides?: {
+      source?: Record<string, boolean>;
+      target?: Record<string, boolean>;
+    };
+  }) =>
+    request<{ sourceSchema: SchemaTree; targetSchema: SchemaTree }>(
+      "/api/infer",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+
+  validate: (body: {
+    sourceSchema: SchemaTree;
+    targetSchema: SchemaTree;
+    mappings: FieldMapping[];
+  }) =>
+    request<{ report: ValidationReport }>("/api/validate", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  exportUrl: (id: string, format: string) =>
+    `/api/projects/${id}/export/${format}`,
+};

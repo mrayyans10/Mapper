@@ -1,0 +1,12 @@
+{
+  "customer": {
+    "givenName": "Grace",
+    "familyName": "Hopper",
+    "mailingAddress": {
+      "line1": "1 Navy Yard",
+      "locality": "Brooklyn",
+      "postalCode": "11205",
+      "country": "US"
+    }
+  }
+}

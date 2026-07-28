@@ -1,0 +1,8 @@
+{
+  "orderId": "O-9",
+  "items": [
+    { "sku": "A1", "qty": 2, "price": 10.5 },
+    { "sku": "B2", "qty": 1, "price": 3 }
+  ],
+  "tags": ["rush", "vip"]
+}
