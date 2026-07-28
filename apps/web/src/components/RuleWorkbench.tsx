@@ -9,6 +9,7 @@ import type {
   RuleGroup,
   RuleKind,
 } from "../api/client";
+import { joinPathAware } from "@mapping-assurance/core";
 
 const OPERATORS: ConditionOperator[] = [
   "==",
@@ -35,10 +36,22 @@ function emptyAtom(): ConditionAtom {
   return { path: "", operator: "==", value: "" };
 }
 
+function syncPriorities(rules: Rule[]): Rule[] {
+  return rules.map((r, i) => ({ ...r, priority: (i + 1) * 10 }));
+}
+
+function resolveCopyMode(rule: Rule): RuleCopyMode {
+  return (
+    rule.copyMode ??
+    (rule.childMappings.length > 0 ? "APPLY_CHILD_MAPPINGS" : "ROUTE_ONLY")
+  );
+}
+
 interface RuleWorkbenchProps {
   ruleGroups: RuleGroup[];
   selectedGroupId: string | null;
   selectedRuleId: string | null;
+  highlightChildMappingId?: string | null;
   sourceSelected: string | null;
   targetSelected: string | null;
   onSelectGroup: (id: string | null) => void;
@@ -50,6 +63,7 @@ export function RuleWorkbench({
   ruleGroups,
   selectedGroupId,
   selectedRuleId,
+  highlightChildMappingId = null,
   sourceSelected,
   targetSelected,
   onSelectGroup,
@@ -60,6 +74,11 @@ export function RuleWorkbench({
     ruleGroups.find((g) => g.id === selectedGroupId) ?? null;
   const selectedRule =
     selectedGroup?.rules.find((r) => r.id === selectedRuleId) ?? null;
+
+  const destinationError =
+    selectedRule && !selectedRule.destinationNode.trim()
+      ? "Destination node is required."
+      : null;
 
   function updateGroups(next: RuleGroup[]) {
     onChange(next);
@@ -90,12 +109,16 @@ export function RuleWorkbench({
 
   function addRule() {
     if (!selectedGroup) return;
+    if (!targetSelected && !selectedGroup.sourceNode) {
+      return;
+    }
+    const destinationNode = targetSelected ?? "";
     const rule: Rule = {
       id: newId("rule"),
       name: `Rule ${selectedGroup.rules.length + 1}`,
       category: "routing",
       sourceNode: selectedGroup.sourceNode,
-      destinationNode: targetSelected ?? selectedGroup.sourceNode,
+      destinationNode,
       kind: "conditional",
       condition: { type: "atom", atom: emptyAtom() },
       priority: (selectedGroup.rules.length + 1) * 10,
@@ -104,7 +127,7 @@ export function RuleWorkbench({
       status: "draft",
       copyMode: "APPLY_CHILD_MAPPINGS",
     };
-    const nextRules = [...selectedGroup.rules, rule];
+    const nextRules = syncPriorities([...selectedGroup.rules, rule]);
     updateGroup({ rules: nextRules });
     onSelectRule(rule.id);
   }
@@ -126,7 +149,7 @@ export function RuleWorkbench({
   function deleteRule(ruleId: string) {
     if (!selectedGroup) return;
     updateGroup({
-      rules: selectedGroup.rules.filter((r) => r.id !== ruleId),
+      rules: syncPriorities(selectedGroup.rules.filter((r) => r.id !== ruleId)),
     });
     if (selectedRuleId === ruleId) onSelectRule(null);
   }
@@ -137,6 +160,31 @@ export function RuleWorkbench({
       onSelectGroup(null);
       onSelectRule(null);
     }
+  }
+
+  function moveRule(groupId: string, ruleId: string, direction: -1 | 1) {
+    updateGroups(
+      ruleGroups.map((g) => {
+        if (g.id !== groupId) return g;
+        const idx = g.rules.findIndex((r) => r.id === ruleId);
+        const target = idx + direction;
+        if (idx < 0 || target < 0 || target >= g.rules.length) return g;
+        const rules = [...g.rules];
+        const [item] = rules.splice(idx, 1);
+        rules.splice(target, 0, item!);
+        return { ...g, rules: syncPriorities(rules) };
+      }),
+    );
+  }
+
+  function moveGroup(groupId: string, direction: -1 | 1) {
+    const idx = ruleGroups.findIndex((g) => g.id === groupId);
+    const target = idx + direction;
+    if (idx < 0 || target < 0 || target >= ruleGroups.length) return;
+    const next = [...ruleGroups];
+    const [item] = next.splice(idx, 1);
+    next.splice(target, 0, item!);
+    updateGroups(next);
   }
 
   function setConditionAtom(atom: ConditionAtom) {
@@ -183,8 +231,10 @@ export function RuleWorkbench({
         ? emptyAtom()
         : null;
 
+  const sourceIsArray = Boolean(selectedGroup?.sourceNode.includes("[*]"));
+
   return (
-    <section className="panel">
+    <section className="panel" id="rule-workbench" data-testid="rule-workbench">
       <div className="panel-header">
         <h2>Rules</h2>
         <div className="toolbar">
@@ -196,6 +246,11 @@ export function RuleWorkbench({
             className="btn"
             disabled={!selectedGroup}
             onClick={addRule}
+            title={
+              !targetSelected
+                ? "Select a target tree node for destination (or edit after create)"
+                : undefined
+            }
           >
             Add rule
           </button>
@@ -205,66 +260,183 @@ export function RuleWorkbench({
       <div className="workspace" style={{ gridTemplateColumns: "1fr 1.4fr" }}>
         <div>
           <p className="muted" style={{ fontSize: "0.8rem" }}>
-            Select a source tree node, then add a group (uses that sourceNode).
-            Select a target node when creating a rule destination.
+            Hierarchy: RuleGroup → Rules → Child mappings. Lower priority wins
+            within a group. Select a source tree node before Add rule group;
+            select a target node for destinations.
           </p>
-          <div className="project-list">
+          {sourceIsArray ? (
+            <p className="hint-banner" data-testid="array-hint">
+              Source node contains <span className="mono">[*]</span>: preview
+              evaluates per element; target arrays append.
+            </p>
+          ) : null}
+          <div className="project-list" role="tree" aria-label="Rule hierarchy">
             {ruleGroups.length === 0 ? (
-              <p className="muted">No rule groups yet.</p>
+              <p className="muted">No rule groups yet. Add a group to start.</p>
             ) : (
-              ruleGroups.map((g) => (
-                <div key={g.id}>
-                  <button
-                    type="button"
-                    className={`project-item ${
+              ruleGroups.map((g, gIdx) => (
+                <div key={g.id} className="rule-tree-group">
+                  <div
+                    className={`project-item rule-row ${
                       g.id === selectedGroupId ? "active" : ""
                     }`}
-                    onClick={() => {
-                      onSelectGroup(g.id);
-                      onSelectRule(null);
-                    }}
+                    role="treeitem"
+                    aria-expanded="true"
+                    aria-selected={g.id === selectedGroupId}
                   >
-                    <div>
-                      <div>{g.name ?? g.id}</div>
-                      <div className="muted" style={{ fontSize: "0.75rem" }}>
-                        <span className="mono">{g.sourceNode}</span> ·{" "}
-                        {g.executionMode} · {g.rules.length} rules
-                      </div>
-                    </div>
                     <button
                       type="button"
-                      className="btn btn-danger"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        deleteGroup(g.id);
+                      className="rule-select-btn"
+                      aria-current={
+                        g.id === selectedGroupId ? "true" : undefined
+                      }
+                      onClick={() => {
+                        onSelectGroup(g.id);
+                        onSelectRule(null);
                       }}
                     >
-                      Delete
+                      <div>
+                        <div>{g.name ?? g.id}</div>
+                        <div className="muted" style={{ fontSize: "0.75rem" }}>
+                          <span className="mono">{g.sourceNode}</span> ·{" "}
+                          {g.executionMode} · {g.rules.length} rules
+                        </div>
+                      </div>
                     </button>
-                  </button>
-                  {g.id === selectedGroupId
-                    ? g.rules.map((r) => (
-                        <button
-                          key={r.id}
-                          type="button"
-                          className={`project-item ${
+                    <div className="row-actions">
+                      <button
+                        type="button"
+                        className="btn"
+                        disabled={gIdx === 0}
+                        aria-label="Move group up"
+                        onClick={() => moveGroup(g.id, -1)}
+                      >
+                        ↑
+                      </button>
+                      <button
+                        type="button"
+                        className="btn"
+                        disabled={gIdx === ruleGroups.length - 1}
+                        aria-label="Move group down"
+                        onClick={() => moveGroup(g.id, 1)}
+                      >
+                        ↓
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-danger"
+                        onClick={() => deleteGroup(g.id)}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+
+                  {g.rules.length === 0 ? (
+                    <p
+                      className="muted"
+                      style={{ marginLeft: "1rem", fontSize: "0.8rem" }}
+                    >
+                      No rules in this group.
+                    </p>
+                  ) : (
+                    g.rules.map((r, rIdx) => (
+                      <div key={r.id} className="rule-tree-rule">
+                        <div
+                          className={`project-item rule-row ${
                             r.id === selectedRuleId ? "active" : ""
-                          }`}
-                          style={{ marginLeft: "0.75rem", marginTop: "0.35rem" }}
-                          onClick={() => onSelectRule(r.id)}
+                          } ${r.enabled ? "" : "rule-disabled"}`}
+                          role="treeitem"
+                          aria-selected={r.id === selectedRuleId}
                         >
-                          <div>
+                          <button
+                            type="button"
+                            className="rule-select-btn"
+                            data-testid={`rule-row-${r.id}`}
+                            aria-current={
+                              r.id === selectedRuleId ? "true" : undefined
+                            }
+                            onClick={() => {
+                              onSelectGroup(g.id);
+                              onSelectRule(r.id);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                onSelectGroup(g.id);
+                                onSelectRule(r.id);
+                              }
+                            }}
+                          >
                             <div>
-                              {r.name}{" "}
-                              <span className="muted">({r.kind})</span>
+                              <div className="chip-row">
+                                <span>{r.name}</span>
+                                <span className="badge info">{r.kind}</span>
+                                <span className="badge info">p{r.priority}</span>
+                                <span className="badge info">
+                                  {resolveCopyMode(r)}
+                                </span>
+                                <span className="badge info">
+                                  {r.childMappings.length} children
+                                </span>
+                                {!r.enabled ? (
+                                  <span className="badge warning">disabled</span>
+                                ) : null}
+                                {r.migrationSource === "FIELD_MAPPING_V1" ? (
+                                  <span className="badge info">legacy</span>
+                                ) : null}
+                              </div>
+                              <div
+                                className="mono muted"
+                                style={{ fontSize: "0.72rem" }}
+                              >
+                                → {r.destinationNode || "(no destination)"}
+                              </div>
                             </div>
-                            <div className="mono muted" style={{ fontSize: "0.72rem" }}>
-                              → {r.destinationNode} · p{r.priority}
-                            </div>
+                          </button>
+                          <div className="row-actions">
+                            <button
+                              type="button"
+                              className="btn"
+                              disabled={rIdx === 0}
+                              aria-label="Move rule up"
+                              data-testid={`rule-move-up-${r.id}`}
+                              onClick={() => moveRule(g.id, r.id, -1)}
+                            >
+                              ↑
+                            </button>
+                            <button
+                              type="button"
+                              className="btn"
+                              disabled={rIdx === g.rules.length - 1}
+                              aria-label="Move rule down"
+                              onClick={() => moveRule(g.id, r.id, 1)}
+                            >
+                              ↓
+                            </button>
                           </div>
-                        </button>
-                      ))
-                    : null}
+                        </div>
+                        {r.childMappings.length > 0 ? (
+                          <ul className="child-summary-list">
+                            {r.childMappings.map((c) => (
+                              <li
+                                key={c.id}
+                                className={
+                                  highlightChildMappingId === c.id
+                                    ? "child-highlight"
+                                    : undefined
+                                }
+                              >
+                                <span className="mono">
+                                  {c.sourcePath || "?"} → {c.targetPath || "?"}
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : null}
+                      </div>
+                    ))
+                  )}
                 </div>
               ))
             )}
@@ -276,14 +448,20 @@ export function RuleWorkbench({
             <p className="muted">Select or create a rule group to edit.</p>
           ) : (
             <div className="inline-form">
-              <label className="label">Group name</label>
+              <label className="label" htmlFor="group-name">
+                Group name
+              </label>
               <input
+                id="group-name"
                 className="field"
                 value={selectedGroup.name ?? ""}
                 onChange={(e) => updateGroup({ name: e.target.value })}
               />
-              <label className="label">Source node</label>
+              <label className="label" htmlFor="group-source">
+                Source node
+              </label>
               <input
+                id="group-source"
                 className="field mono"
                 value={selectedGroup.sourceNode}
                 onChange={(e) => {
@@ -301,8 +479,11 @@ export function RuleWorkbench({
                   );
                 }}
               />
-              <label className="label">Execution mode</label>
+              <label className="label" htmlFor="group-mode">
+                Execution mode
+              </label>
               <select
+                id="group-mode"
                 className="field"
                 value={selectedGroup.executionMode}
                 onChange={(e) =>
@@ -320,25 +501,38 @@ export function RuleWorkbench({
               ) : (
                 <>
                   <hr style={{ borderColor: "var(--border)", width: "100%" }} />
-                  <label className="label">Rule name</label>
+                  <label className="label" htmlFor="rule-name">
+                    Rule name
+                  </label>
                   <input
+                    id="rule-name"
                     className="field"
                     value={selectedRule.name}
                     onChange={(e) => updateRule({ name: e.target.value })}
                   />
-                  <label className="label">Destination node</label>
+                  <label className="label" htmlFor="rule-dest">
+                    Destination node
+                  </label>
                   <input
+                    id="rule-dest"
                     className="field mono"
+                    aria-invalid={Boolean(destinationError)}
                     value={selectedRule.destinationNode}
                     onChange={(e) =>
                       updateRule({ destinationNode: e.target.value })
                     }
                   />
+                  {destinationError ? (
+                    <p className="error-text" data-testid="destination-error">
+                      {destinationError}
+                    </p>
+                  ) : null}
                   <div className="toolbar">
-                    <label className="label" style={{ margin: 0 }}>
+                    <label className="label" htmlFor="rule-kind" style={{ margin: 0 }}>
                       Kind
                     </label>
                     <select
+                      id="rule-kind"
                       className="field"
                       style={{ maxWidth: "12rem" }}
                       value={selectedRule.kind}
@@ -367,10 +561,15 @@ export function RuleWorkbench({
                       <option value="unconditional">unconditional</option>
                       <option value="fallback">fallback</option>
                     </select>
-                    <label className="label" style={{ margin: 0 }}>
+                    <label
+                      className="label"
+                      htmlFor="rule-priority"
+                      style={{ margin: 0 }}
+                    >
                       Priority
                     </label>
                     <input
+                      id="rule-priority"
                       className="field"
                       style={{ maxWidth: "6rem" }}
                       type="number"
@@ -379,18 +578,18 @@ export function RuleWorkbench({
                         updateRule({ priority: Number(e.target.value) })
                       }
                     />
-                    <label className="label" style={{ margin: 0 }}>
+                    <label
+                      className="label"
+                      htmlFor="rule-copy-mode"
+                      style={{ margin: 0 }}
+                    >
                       Copy mode
                     </label>
                     <select
+                      id="rule-copy-mode"
                       className="field"
                       style={{ maxWidth: "14rem" }}
-                      value={
-                        selectedRule.copyMode ??
-                        (selectedRule.childMappings.length > 0
-                          ? "APPLY_CHILD_MAPPINGS"
-                          : "ROUTE_ONLY")
-                      }
+                      value={resolveCopyMode(selectedRule)}
                       onChange={(e) =>
                         updateRule({
                           copyMode: e.target.value as RuleCopyMode,
@@ -417,9 +616,12 @@ export function RuleWorkbench({
 
                   {selectedRule.kind === "conditional" && atom ? (
                     <>
-                      <label className="label">Condition (atom)</label>
+                      <label className="label" htmlFor="cond-path">
+                        Condition (atom MVP)
+                      </label>
                       <div className="toolbar">
                         <input
+                          id="cond-path"
                           className="field mono"
                           placeholder="path (relative or $.…)"
                           value={atom.path}
@@ -430,6 +632,7 @@ export function RuleWorkbench({
                         <select
                           className="field"
                           style={{ maxWidth: "10rem" }}
+                          aria-label="Condition operator"
                           value={atom.operator}
                           onChange={(e) =>
                             setConditionAtom({
@@ -446,6 +649,7 @@ export function RuleWorkbench({
                         </select>
                         <input
                           className="field"
+                          aria-label="Condition value"
                           placeholder="value"
                           value={
                             atom.value === undefined || atom.value === null
@@ -468,8 +672,8 @@ export function RuleWorkbench({
                         />
                       </div>
                       <p className="muted" style={{ fontSize: "0.75rem" }}>
-                        Nested AND/OR/NOT editing is available via API/core;
-                        UI ships atom conditions for MVP.
+                        Nested AND/OR/NOT editing is available via API/core; UI
+                        ships atom conditions for MVP.
                       </p>
                     </>
                   ) : null}
@@ -486,8 +690,12 @@ export function RuleWorkbench({
                   </div>
                   {selectedRule.childMappings.length === 0 ? (
                     <p className="muted">
-                      No child mappings. With default copy mode this is
-                      ROUTE_ONLY (no payload copy).
+                      No child mappings.{" "}
+                      {resolveCopyMode(selectedRule) === "ROUTE_ONLY"
+                        ? "ROUTE_ONLY records the destination without copying payload."
+                        : resolveCopyMode(selectedRule) === "COPY_SOURCE_NODE"
+                          ? "COPY_SOURCE_NODE copies the whole source node."
+                          : "APPLY_CHILD_MAPPINGS needs at least one child row."}
                     </p>
                   ) : (
                     <table className="mapping-table">
@@ -495,60 +703,108 @@ export function RuleWorkbench({
                         <tr>
                           <th>Source (relative)</th>
                           <th>Target (relative)</th>
-                          <th>Transform type</th>
+                          <th>Resolved abs</th>
+                          <th>Transform (stored, not executed)</th>
                           <th />
                         </tr>
                       </thead>
                       <tbody>
-                        {selectedRule.childMappings.map((c) => (
-                          <tr key={c.id}>
-                            <td>
-                              <input
-                                className="field mono"
-                                value={c.sourcePath}
-                                onChange={(e) =>
-                                  updateChild(c.id, {
-                                    sourcePath: e.target.value,
-                                  })
-                                }
-                              />
-                            </td>
-                            <td>
-                              <input
-                                className="field mono"
-                                value={c.targetPath}
-                                onChange={(e) =>
-                                  updateChild(c.id, {
-                                    targetPath: e.target.value,
-                                  })
-                                }
-                              />
-                            </td>
-                            <td>
-                              <input
-                                className="field"
-                                placeholder="optional"
-                                value={c.transformation?.type ?? ""}
-                                onChange={(e) =>
-                                  updateChild(c.id, {
-                                    transformation: e.target.value
-                                      ? { type: e.target.value }
-                                      : undefined,
-                                  })
-                                }
-                              />
-                            </td>
-                            <td>
-                              <button
-                                type="button"
-                                className="btn btn-danger"
-                                onClick={() => removeChild(c.id)}
-                              >
-                                Delete
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
+                        {selectedRule.childMappings.map((c) => {
+                          const absSource = joinPathAware(
+                            selectedGroup.sourceNode,
+                            c.sourcePath || ".",
+                            sourceIsArray,
+                          );
+                          const absTarget = joinPathAware(
+                            selectedRule.destinationNode || "$",
+                            c.targetPath || ".",
+                            selectedRule.destinationNode.includes("[*]") ||
+                              sourceIsArray,
+                          );
+                          const pathError =
+                            c.sourcePath.startsWith("$.") ||
+                            c.targetPath.startsWith("$.")
+                              ? "Relative paths should not start with $."
+                              : null;
+                          return (
+                            <tr
+                              key={c.id}
+                              className={
+                                highlightChildMappingId === c.id
+                                  ? "child-highlight"
+                                  : undefined
+                              }
+                              data-testid={`child-row-${c.id}`}
+                            >
+                              <td>
+                                <input
+                                  className="field mono"
+                                  aria-label="Child source path"
+                                  value={c.sourcePath}
+                                  onChange={(e) =>
+                                    updateChild(c.id, {
+                                      sourcePath: e.target.value,
+                                    })
+                                  }
+                                />
+                              </td>
+                              <td>
+                                <input
+                                  className="field mono"
+                                  aria-label="Child target path"
+                                  value={c.targetPath}
+                                  onChange={(e) =>
+                                    updateChild(c.id, {
+                                      targetPath: e.target.value,
+                                    })
+                                  }
+                                />
+                              </td>
+                              <td>
+                                <div
+                                  className="mono muted"
+                                  style={{ fontSize: "0.7rem" }}
+                                >
+                                  {absSource}
+                                  <br />→ {absTarget}
+                                </div>
+                                {pathError ? (
+                                  <div className="error-text">{pathError}</div>
+                                ) : null}
+                              </td>
+                              <td>
+                                <input
+                                  className="field"
+                                  placeholder="optional type"
+                                  aria-label="Transformation type metadata"
+                                  value={c.transformation?.type ?? ""}
+                                  onChange={(e) =>
+                                    updateChild(c.id, {
+                                      transformation: e.target.value
+                                        ? { type: e.target.value }
+                                        : undefined,
+                                    })
+                                  }
+                                />
+                                <div
+                                  className="muted"
+                                  style={{ fontSize: "0.7rem" }}
+                                >
+                                  metadata only
+                                </div>
+                              </td>
+                              <td>
+                                <button
+                                  type="button"
+                                  className="btn btn-danger"
+                                  onClick={() => removeChild(c.id)}
+                                >
+                                  Delete
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   )}
@@ -572,5 +828,4 @@ export function RuleWorkbench({
   );
 }
 
-// silence unused ConditionExpr import for future nested editor
 export type { ConditionExpr };

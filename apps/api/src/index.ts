@@ -3,12 +3,15 @@ import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getDb } from "./db/projects.js";
+import { ensureTemplateSchema } from "./db/templates.js";
 import { createProjectsRouter, createUtilityRouter } from "./routes/projects.js";
+import { createTemplatesRouter } from "./routes/templates.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export function createApp() {
-  getDb();
+  const database = getDb();
+  ensureTemplateSchema(database);
   const app = express();
   app.use(cors());
   app.use(express.json({ limit: "5mb" }));
@@ -18,6 +21,7 @@ export function createApp() {
   });
 
   app.use("/api/projects", createProjectsRouter());
+  app.use("/api/templates", createTemplatesRouter(database));
   app.use("/api", createUtilityRouter());
 
   // Serve built web client in production if present

@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   createMapping,
+  exportPreviewJson,
   parseJsonDocument,
   type FieldMapping,
   type MappingProject,
   type MappingStatus,
   type PreviewReport,
+  type Rule,
   type RuleGroup,
   type SchemaTree,
   type ValidationReport,
@@ -14,6 +16,8 @@ import { api } from "./api/client";
 import { JsonInputPanel } from "./components/JsonInputPanel";
 import { MappingPanel } from "./components/MappingPanel";
 import { PreviewPanel } from "./components/PreviewPanel";
+import { RuleSimulatorPanel } from "./components/RuleSimulatorPanel";
+import { RuleTemplatesPanel } from "./components/RuleTemplatesPanel";
 import { RuleWorkbench } from "./components/RuleWorkbench";
 import { SchemaTreeView } from "./components/SchemaTreeView";
 import { ValidationReportView } from "./components/ValidationReportView";
@@ -67,6 +71,9 @@ export default function App() {
   const [ruleGroups, setRuleGroups] = useState<RuleGroup[]>([]);
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
   const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null);
+  const [highlightChildMappingId, setHighlightChildMappingId] = useState<
+    string | null
+  >(null);
   const [report, setReport] = useState<ValidationReport | null>(null);
   const [preview, setPreview] = useState<PreviewReport | null>(null);
   const [sourceSelected, setSourceSelected] = useState<string | null>(null);
@@ -92,6 +99,25 @@ export default function App() {
   useEffect(() => {
     void refreshProjects();
   }, [refreshProjects]);
+
+  function navigateToRule(
+    ruleGroupId: string | undefined,
+    ruleId: string | undefined,
+    childMappingId?: string,
+  ) {
+    if (ruleGroupId) setSelectedGroupId(ruleGroupId);
+    else if (ruleId) {
+      const found = ruleGroups.find((g) => g.rules.some((r) => r.id === ruleId));
+      if (found) setSelectedGroupId(found.id);
+    }
+    if (ruleId) setSelectedRuleId(ruleId);
+    setHighlightChildMappingId(childMappingId ?? null);
+    window.requestAnimationFrame(() => {
+      document
+        .getElementById("rule-workbench")
+        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
 
   function validateLocalJson() {
     const src = parseJsonDocument(sourceJson);
@@ -161,7 +187,7 @@ export default function App() {
           },
           runValidation: true,
         });
-        applyProject(data.project);
+        applyProject(data.project, { keepPreview: true });
         showToast("Validation report generated");
       } else {
         const data = await api.validate({
@@ -213,7 +239,10 @@ export default function App() {
     }
   }
 
-  function applyProject(p: MappingProject) {
+  function applyProject(
+    p: MappingProject,
+    opts?: { keepPreview?: boolean },
+  ) {
     setProject(p);
     setProjectName(p.name);
     setSourceJson(p.sourceJson);
@@ -223,9 +252,13 @@ export default function App() {
     setMappings(p.mappings);
     setRuleGroups(p.ruleGroups ?? []);
     setReport(p.validationReport);
-    setPreview(null);
+    if (!opts?.keepPreview) setPreview(null);
     setSourceError(null);
     setTargetError(null);
+    if (p.ruleGroups?.[0]) {
+      setSelectedGroupId(p.ruleGroups[0].id);
+      setSelectedRuleId(p.ruleGroups[0].rules[0]?.id ?? null);
+    }
   }
 
   async function saveProject() {
@@ -393,6 +426,40 @@ export default function App() {
     }
   }
 
+  function exportPreviewSession() {
+    if (!preview) {
+      setError("Run Preview before exporting preview JSON.");
+      return;
+    }
+    downloadText(
+      `${projectName}-preview.json`,
+      exportPreviewJson(preview),
+      "application/json",
+    );
+    showToast("Exported preview.json (session)");
+  }
+
+  function applyTemplateRule(groupId: string, rule: Rule) {
+    setRuleGroups((prev) =>
+      prev.map((g) => {
+        if (g.id !== groupId) return g;
+        const rules = [
+          ...g.rules,
+          {
+            ...rule,
+            sourceNode: g.sourceNode,
+            priority: (g.rules.length + 1) * 10,
+          },
+        ];
+        return { ...g, rules };
+      }),
+    );
+    setSelectedGroupId(groupId);
+    setSelectedRuleId(rule.id);
+    setReport(null);
+    setPreview(null);
+  }
+
   const schemaRevision = useMemo(
     () =>
       `${sourceSchema ? Object.keys(sourceSchema.nodes).length : 0}-${
@@ -407,9 +474,8 @@ export default function App() {
         <div>
           <h1>Mapping Assurance</h1>
           <p>
-            Paste source and target JSON, map fields side by side, and generate a
-            deterministic validation report. No transformation code — assurance
-            only.
+            Rule-based mapping assurance: author routing rules, validate
+            structurally, and preview destinations. No AI — deterministic only.
           </p>
         </div>
         <div className="toolbar">
@@ -449,7 +515,11 @@ export default function App() {
       </header>
 
       {error ? (
-        <div className="error-text" style={{ marginBottom: "0.75rem" }}>
+        <div
+          className="error-banner"
+          role="alert"
+          style={{ marginBottom: "0.75rem" }}
+        >
           {error}
         </div>
       ) : null}
@@ -491,6 +561,14 @@ export default function App() {
               type="button"
               className="btn"
               disabled={!project}
+              onClick={() => void exportFormat("rules.json")}
+            >
+              Export rules JSON
+            </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={!project}
               onClick={() => void exportFormat("report.json")}
             >
               Export report JSON
@@ -511,6 +589,14 @@ export default function App() {
             >
               Export CSV
             </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={!preview}
+              onClick={exportPreviewSession}
+            >
+              Export preview JSON
+            </button>
           </div>
         </div>
         <div className="inline-form" style={{ maxWidth: "28rem" }}>
@@ -526,6 +612,9 @@ export default function App() {
           {project ? (
             <p className="muted" style={{ margin: 0, fontSize: "0.8rem" }}>
               Saved id: <span className="mono">{project.id}</span>
+              {project.schemaVersion != null ? (
+                <> · schema v{project.schemaVersion}</>
+              ) : null}
             </p>
           ) : (
             <p className="muted" style={{ margin: 0, fontSize: "0.8rem" }}>
@@ -549,13 +638,15 @@ export default function App() {
                   <div>{p.name}</div>
                   <div className="muted" style={{ fontSize: "0.75rem" }}>
                     Updated {new Date(p.updatedAt).toLocaleString()} ·{" "}
-                    {p.mappings.length} mappings
+                    {(p.ruleGroups ?? []).length} groups · {p.mappings.length}{" "}
+                    mappings
                   </div>
                 </div>
                 <div className="row-actions">
                   <button
                     type="button"
                     className="btn"
+                    data-testid={`open-project-${p.id}`}
                     onClick={() => void loadProject(p.id)}
                   >
                     Open
@@ -604,6 +695,7 @@ export default function App() {
         ruleGroups={ruleGroups}
         selectedGroupId={selectedGroupId}
         selectedRuleId={selectedRuleId}
+        highlightChildMappingId={highlightChildMappingId}
         sourceSelected={sourceSelected}
         targetSelected={targetSelected}
         onSelectGroup={setSelectedGroupId}
@@ -615,8 +707,38 @@ export default function App() {
         }}
       />
 
-      <ValidationReportView report={report} />
-      <PreviewPanel preview={preview} />
+      <div className="panel-grid">
+        <RuleSimulatorPanel
+          ruleGroups={ruleGroups}
+          selectedGroupId={selectedGroupId}
+          selectedRuleId={selectedRuleId}
+          defaultSampleJson={sourceJson}
+          onSelectRule={(gid, rid) => {
+            setSelectedGroupId(gid);
+            setSelectedRuleId(rid);
+          }}
+        />
+        <RuleTemplatesPanel
+          ruleGroups={ruleGroups}
+          selectedGroupId={selectedGroupId}
+          selectedRuleId={selectedRuleId}
+          sourceSelected={sourceSelected}
+          targetSelected={targetSelected}
+          onApplyRule={applyTemplateRule}
+          onToast={showToast}
+          onError={setError}
+        />
+      </div>
+
+      <ValidationReportView
+        report={report}
+        onNavigateToRule={navigateToRule}
+      />
+      <PreviewPanel
+        preview={preview}
+        onNavigateToRule={(gid, rid) => navigateToRule(gid, rid)}
+        onExportPreview={exportPreviewSession}
+      />
 
       {toast ? <div className="toast">{toast}</div> : null}
     </div>

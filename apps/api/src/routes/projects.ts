@@ -6,16 +6,19 @@ import {
   exportMappingReportCsv,
   exportMappingReportMarkdown,
   exportMappingsJson,
+  exportRuleGroupsJson,
   exportValidationReportJson,
   inferSchema,
   migrateProjectV1toV2,
   parseJsonDocument,
   previewRuleGroups,
+  simulateRule,
   validateMappings,
   validateProjectRules,
   validateRuleGroups,
   type FieldMapping,
   type MappingProject,
+  type Rule,
   type RuleGroup,
 } from "@mapping-assurance/core";
 import {
@@ -92,6 +95,17 @@ const previewBodySchema = z.object({
   sourceJson: z.string().min(1),
   targetJson: z.string().optional(),
   ruleGroups: z.array(z.any()).min(1),
+});
+
+const simulateBodySchema = z.object({
+  rule: z.any(),
+  ruleGroup: z.object({
+    id: z.string(),
+    sourceNode: z.string(),
+    executionMode: z.enum(["first-match", "all-match"]),
+  }),
+  sampleDocument: z.unknown(),
+  sampleJson: z.string().optional(),
 });
 
 function buildSchemas(
@@ -385,6 +399,7 @@ export function createProjectsRouter(): Router {
           exportMappingReportMarkdown({
             name: project.name,
             mappings: project.mappings,
+            ruleGroups: project.ruleGroups,
             validationReport: project.validationReport,
           }),
         );
@@ -399,10 +414,24 @@ export function createProjectsRouter(): Router {
         res.send(exportMappingReportCsv(project.mappings));
         return;
       }
+      case "rules.json": {
+        res.setHeader("Content-Type", "application/json");
+        res.setHeader(
+          "Content-Disposition",
+          `attachment; filename="${safeName}-rules.json"`,
+        );
+        res.send(
+          exportRuleGroupsJson({
+            schemaVersion: project.schemaVersion,
+            ruleGroups: project.ruleGroups,
+          }),
+        );
+        return;
+      }
       default:
         res.status(400).json({
           error:
-            "Unknown export format. Use mappings.json, report.json, report.md, or mappings.csv.",
+            "Unknown export format. Use mappings.json, rules.json, report.json, report.md, or mappings.csv.",
         });
     }
   });
@@ -510,6 +539,33 @@ export function createUtilityRouter(): Router {
       { targetDocument },
     );
     res.json({ preview });
+  });
+
+  router.post("/simulate", (req, res) => {
+    const parsed = simulateBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten() });
+      return;
+    }
+    let sampleDocument = parsed.data.sampleDocument;
+    if (parsed.data.sampleJson) {
+      const sampleParsed = parseJsonDocument(parsed.data.sampleJson);
+      if (!sampleParsed.ok) {
+        res.status(400).json({ error: `Sample JSON: ${sampleParsed.error}` });
+        return;
+      }
+      sampleDocument = sampleParsed.value;
+    }
+    if (sampleDocument === undefined) {
+      res.status(400).json({ error: "sampleDocument or sampleJson required" });
+      return;
+    }
+    const simulation = simulateRule({
+      rule: parsed.data.rule as Rule,
+      ruleGroup: parsed.data.ruleGroup,
+      sampleDocument,
+    });
+    res.json({ simulation });
   });
 
   return router;

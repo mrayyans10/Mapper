@@ -11,6 +11,8 @@ import type {
   RuleCopyMode,
   RuleGroup,
   RuleKind,
+  RuleSimulationResult,
+  RuleTemplate,
   SchemaTree,
   ValidationReport,
 } from "@mapping-assurance/core";
@@ -120,6 +122,53 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+
+  simulate: (body: {
+    rule: Rule;
+    ruleGroup: {
+      id: string;
+      sourceNode: string;
+      executionMode: ExecutionMode;
+    };
+    sampleJson?: string;
+    sampleDocument?: unknown;
+  }) =>
+    request<{ simulation: RuleSimulationResult }>("/api/simulate", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  listTemplates: () =>
+    request<{ templates: RuleTemplate[] }>("/api/templates"),
+
+  createTemplate: (body: {
+    name: string;
+    description?: string;
+    rule?: Rule;
+    template?: RuleTemplate;
+    suggestedExecutionMode?: ExecutionMode;
+  }) =>
+    request<RuleTemplate>("/api/templates", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  instantiateTemplate: (
+    id: string,
+    body: {
+      sourceNode: string;
+      destinationNode: string;
+      name?: string;
+      priority?: number;
+    },
+  ) =>
+    request<{ rule: Rule }>(`/api/templates/${id}/instantiate`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  deleteTemplate: (id: string) =>
+    request<void>(`/api/templates/${id}`, { method: "DELETE" }),
 
   exportUrl: (id: string, format: string) =>
     `/api/projects/${id}/export/${format}`,

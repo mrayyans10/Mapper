@@ -1,8 +1,10 @@
 # Step 5 Plan — Rule Authoring Stability
 
-**Status:** PENDING APPROVAL (plan only — no implementation until approved)  
+**Status:** APPROVED + IMPLEMENTED (see `docs/STEP5_UI_STABILITY.md`)  
+**Additions after approval:** Rule Simulator · Rule Templates  
 **Prerequisite:** Step 3 amendments + Step 4 UI (complete)  
 **Out of scope:** AI suggestions, governance, transformation execution
+
 
 ---
 
