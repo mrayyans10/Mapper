@@ -5,3 +5,4 @@ export * from "./validation/index.js";
 export * from "./export/index.js";
 export * from "./rule/index.js";
 export * from "./migration/index.js";
+export * from "./preview/index.js";

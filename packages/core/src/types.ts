@@ -98,7 +98,7 @@ export interface ValidationReport {
 }
 
 /**
- * Preview report shape (engine implemented in a later tranche).
+ * Preview report shape.
  */
 export interface PreviewReport {
   generatedAt: string;
@@ -117,6 +117,18 @@ export interface PreviewReport {
   fallbackUsed: boolean;
   destinations: string[];
   resultObject: unknown;
+  /** Optional detailed trace (populated by Preview Engine). */
+  traces?: Array<{
+    ruleGroupId: string;
+    ruleId: string;
+    action: string;
+    detail: string;
+    arrayIndex?: number;
+    sourcePath?: string;
+    targetPath?: string;
+    transformationDeferred?: { type: string };
+  }>;
+  notes?: string[];
 }
 
 export interface MappingProject {

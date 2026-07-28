@@ -10,7 +10,10 @@ import {
   inferSchema,
   migrateProjectV1toV2,
   parseJsonDocument,
+  previewRuleGroups,
   validateMappings,
+  validateProjectRules,
+  validateRuleGroups,
   type FieldMapping,
   type MappingProject,
   type RuleGroup,
@@ -79,7 +82,15 @@ const validateBodySchema = z.object({
     rootPath: z.string(),
     nodes: z.record(z.any()),
   }),
-  mappings: z.array(mappingSchema),
+  mappings: z.array(mappingSchema).optional(),
+  ruleGroups: z.array(z.any()).optional(),
+  requireFallback: z.boolean().optional(),
+});
+
+const previewBodySchema = z.object({
+  sourceJson: z.string().min(1),
+  targetJson: z.string().optional(),
+  ruleGroups: z.array(z.any()).min(1),
 });
 
 function buildSchemas(
@@ -203,10 +214,6 @@ export function createProjectsRouter(): Router {
       parsed.data.mappings !== undefined ||
       parsed.data.requiredOverrides !== undefined;
 
-    const validationReport = shouldValidate
-      ? validateMappings(schemas.sourceSchema, schemas.targetSchema, mappings)
-      : existing.validationReport;
-
     let project: MappingProject = {
       ...existing,
       name: parsed.data.name ?? existing.name,
@@ -215,7 +222,6 @@ export function createProjectsRouter(): Router {
       sourceSchema: schemas.sourceSchema,
       targetSchema: schemas.targetSchema,
       mappings,
-      validationReport,
       updatedAt: new Date().toISOString(),
     };
 
@@ -232,6 +238,24 @@ export function createProjectsRouter(): Router {
       project = migrateProjectV1toV2(project);
     }
 
+    project.validationReport = shouldValidate
+      ? project.ruleGroups.length > 0
+        ? validateProjectRules(
+            {
+              ruleGroups: project.ruleGroups,
+              sourceSchema: schemas.sourceSchema,
+              targetSchema: schemas.targetSchema,
+              mappings,
+            },
+            { includeLegacyMappingValidation: mappings.length > 0 },
+          )
+        : validateMappings(
+            schemas.sourceSchema,
+            schemas.targetSchema,
+            mappings,
+          )
+      : existing.validationReport;
+
     updateProjectRecord(project);
     res.json({ project });
   });
@@ -242,11 +266,18 @@ export function createProjectsRouter(): Router {
       res.status(404).json({ error: "Project not found." });
       return;
     }
-    const report = validateMappings(
-      existing.sourceSchema,
-      existing.targetSchema,
-      existing.mappings,
-    );
+
+    const report =
+      existing.ruleGroups.length > 0
+        ? validateProjectRules(existing, {
+            includeLegacyMappingValidation: existing.mappings.length > 0,
+          })
+        : validateMappings(
+            existing.sourceSchema,
+            existing.targetSchema,
+            existing.mappings,
+          );
+
     const project: MappingProject = {
       ...existing,
       validationReport: report,
@@ -256,6 +287,35 @@ export function createProjectsRouter(): Router {
     res.json({ project, report });
   });
 
+  router.post("/:id/preview", (req, res) => {
+    const existing = getProject(req.params.id);
+    if (!existing) {
+      res.status(404).json({ error: "Project not found." });
+      return;
+    }
+    const sourceParsed = parseJsonDocument(existing.sourceJson);
+    if (!sourceParsed.ok) {
+      res.status(400).json({ error: sourceParsed.error });
+      return;
+    }
+    let targetDocument: unknown | undefined;
+    if (typeof req.body?.targetJson === "string" && req.body.targetJson.trim()) {
+      const targetParsed = parseJsonDocument(req.body.targetJson);
+      if (!targetParsed.ok) {
+        res.status(400).json({ error: targetParsed.error });
+        return;
+      }
+      targetDocument = targetParsed.value;
+    } else {
+      const targetParsed = parseJsonDocument(existing.targetJson);
+      if (targetParsed.ok) targetDocument = targetParsed.value;
+    }
+
+    const preview = previewRuleGroups(existing.ruleGroups, sourceParsed.value, {
+      targetDocument,
+    });
+    res.json({ preview });
+  });
   router.delete("/:id", (req, res) => {
     const ok = deleteProject(req.params.id);
     if (!ok) {
@@ -365,12 +425,76 @@ export function createUtilityRouter(): Router {
       res.status(400).json({ error: parsed.error.flatten() });
       return;
     }
+
+    const sourceSchema =
+      parsed.data.sourceSchema as MappingProject["sourceSchema"];
+    const targetSchema =
+      parsed.data.targetSchema as MappingProject["targetSchema"];
+
+    if (parsed.data.ruleGroups && parsed.data.ruleGroups.length > 0) {
+      const ruleReport = validateRuleGroups(
+        parsed.data.ruleGroups as RuleGroup[],
+        sourceSchema,
+        targetSchema,
+        { requireFallback: parsed.data.requireFallback },
+      );
+      const report = validateProjectRules(
+        {
+          ruleGroups: parsed.data.ruleGroups as RuleGroup[],
+          sourceSchema,
+          targetSchema,
+          mappings: parsed.data.mappings,
+        },
+        {
+          requireFallback: parsed.data.requireFallback,
+          includeLegacyMappingValidation: Boolean(parsed.data.mappings?.length),
+        },
+      );
+      res.json({ report, ruleReport });
+      return;
+    }
+
+    if (!parsed.data.mappings) {
+      res.status(400).json({
+        error: "Provide mappings (legacy) and/or ruleGroups for validation.",
+      });
+      return;
+    }
+
     const report = validateMappings(
-      parsed.data.sourceSchema as MappingProject["sourceSchema"],
-      parsed.data.targetSchema as MappingProject["targetSchema"],
+      sourceSchema,
+      targetSchema,
       parsed.data.mappings,
     );
     res.json({ report });
+  });
+
+  router.post("/preview", (req, res) => {
+    const parsed = previewBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten() });
+      return;
+    }
+    const sourceParsed = parseJsonDocument(parsed.data.sourceJson);
+    if (!sourceParsed.ok) {
+      res.status(400).json({ error: `Source JSON: ${sourceParsed.error}` });
+      return;
+    }
+    let targetDocument: unknown | undefined;
+    if (parsed.data.targetJson) {
+      const targetParsed = parseJsonDocument(parsed.data.targetJson);
+      if (!targetParsed.ok) {
+        res.status(400).json({ error: `Target JSON: ${targetParsed.error}` });
+        return;
+      }
+      targetDocument = targetParsed.value;
+    }
+    const preview = previewRuleGroups(
+      parsed.data.ruleGroups as RuleGroup[],
+      sourceParsed.value,
+      { targetDocument },
+    );
+    res.json({ preview });
   });
 
   return router;

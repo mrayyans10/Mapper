@@ -107,9 +107,10 @@ Rule Platform redesign is **approved**. Progress:
 
 - Step 1: [`docs/STEP1_RULE_DOMAIN_DESIGN.md`](docs/STEP1_RULE_DOMAIN_DESIGN.md)
 - Step 2 (migration + Rule Engine): [`docs/STEP2_RULE_ENGINE.md`](docs/STEP2_RULE_ENGINE.md)
+- Step 3 (Validation + Preview): [`docs/STEP3_VALIDATION_PREVIEW.md`](docs/STEP3_VALIDATION_PREVIEW.md)
 - Approval record: [`docs/ARCHITECTURE_APPROVAL_RULE_PLATFORM.md`](docs/ARCHITECTURE_APPROVAL_RULE_PLATFORM.md)
 
-UI Rule editor is intentionally not started yet.
+UI Rule editor is intentionally not started yet (Step 4+).
 
 ## Out of scope (intentionally)
 
