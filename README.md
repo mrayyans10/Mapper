@@ -101,6 +101,14 @@ npm run test:e2e
 | `fixtures/array-mapping` | Arrays of objects + primitives |
 | `fixtures/incompatible` | Type / structure conflicts |
 
+## Architecture approval (Rule Platform)
+
+Next product direction (rule-based mapping assurance) is documented for review:
+
+- [`docs/ARCHITECTURE_APPROVAL_RULE_PLATFORM.md`](docs/ARCHITECTURE_APPROVAL_RULE_PLATFORM.md)
+
+No Rule Engine implementation starts until that document is approved.
+
 ## Out of scope (intentionally)
 
 Authentication, AI suggestions, SSO, Git integration, enterprise RBAC, and code generation.
