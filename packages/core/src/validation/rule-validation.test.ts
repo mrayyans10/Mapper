@@ -260,6 +260,40 @@ describe("validateRuleGroups", () => {
     ).toBe(true);
   });
 
+  it("reports malformed atom conditions instead of throwing", () => {
+    const groups: RuleGroup[] = [
+      {
+        id: "g1",
+        sourceNode: "$",
+        executionMode: "first-match",
+        rules: [
+          rule({
+            id: "bad",
+            sourceNode: "$",
+            destinationNode: "$.tier",
+            kind: "conditional",
+            // Intentionally wrong shape (path/operator on root, missing atom)
+            condition: {
+              type: "atom",
+              path: "$.email",
+              operator: "EXISTS",
+            } as unknown as Rule["condition"],
+          }),
+        ],
+      },
+    ];
+    expect(() => validateRuleGroups(groups, source, target)).not.toThrow();
+    const report = validateRuleGroups(groups, source, target);
+    expect(
+      report.issues.some(
+        (i) =>
+          i.type === "invalid_condition" &&
+          i.ruleId === "bad" &&
+          /missing `atom`/i.test(i.message),
+      ),
+    ).toBe(true);
+  });
+
   it("detects conflicting unconditional rules", () => {
     const groups: RuleGroup[] = [
       {
