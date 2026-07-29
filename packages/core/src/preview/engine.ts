@@ -1,6 +1,12 @@
 import { resolveRuleCopyMode } from "../rule/copy-mode.js";
 import { evaluateRuleGroups } from "../rule/engine.js";
-import { getPathValue, joinPathAware } from "../rule/paths.js";
+import {
+  getPathValue,
+  getPathValues,
+  isAbsolutePath,
+  joinPathAware,
+  parseAbsolutePath,
+} from "../rule/paths.js";
 import type { Rule, RuleGroup } from "../rule/types.js";
 import type { PreviewReport } from "../types.js";
 
@@ -45,23 +51,129 @@ function findRule(ruleGroups: RuleGroup[], ruleId: string): Rule | undefined {
   return undefined;
 }
 
-/** Writer that appends into target arrays (P1) instead of always using index 0. */
+/** Array container path for the last `[*]` in a destination (supports nested / root-array). */
+function lastArrayContainerPath(destinationNode: string): string {
+  const idx = destinationNode.lastIndexOf("[*]");
+  if (idx === -1) return destinationNode;
+  return destinationNode.slice(0, idx);
+}
+
+/**
+ * Writer that appends into target arrays (P1).
+ * Supports object roots (`$.…`) and root-array documents (`$[*]…`).
+ */
 class PreviewWriter {
-  constructor(private readonly root: JsonObject) {}
+  private data: unknown;
+
+  constructor(initial: unknown) {
+    if (initial === undefined) {
+      this.data = {};
+    } else {
+      this.data = cloneJson(initial);
+    }
+  }
+
+  getResult(): unknown {
+    return this.data;
+  }
 
   /**
    * Allocate/append an object element under an array destination for one match.
-   * Returns the concrete element index written.
+   * Returns the concrete element index written at the final array segment.
    */
   allocateArrayElement(arrayPath: string): number {
-    const parts = this.split(arrayPath);
-    const { parent, key } = this.navigateToParent(parts);
-    const existing = parent[key];
-    const arr = Array.isArray(existing) ? existing : [];
-    const index = arr.length;
-    arr.push({});
-    parent[key] = arr;
-    return index;
+    if (arrayPath === "$") {
+      if (!Array.isArray(this.data)) this.data = [];
+      const arr = this.data as unknown[];
+      const index = arr.length;
+      arr.push({});
+      return index;
+    }
+
+    if (!isAbsolutePath(arrayPath)) return 0;
+
+    // Ensure parent structure exists, then append to the terminal array.
+    if (arrayPath === "$[*]" || arrayPath.startsWith("$[*]")) {
+      if (!Array.isArray(this.data)) this.data = [];
+    } else if (
+      this.data === null ||
+      typeof this.data !== "object" ||
+      Array.isArray(this.data)
+    ) {
+      this.data = {};
+    }
+
+    const segments = parseAbsolutePath(arrayPath);
+    let current: unknown = this.data;
+
+    for (let i = 0; i < segments.length; i++) {
+      const seg = segments[i]!;
+      const isLast = i === segments.length - 1;
+
+      if (seg.key === "" && seg.wildcard) {
+        // Root array
+        if (!Array.isArray(current)) {
+          this.data = [];
+          current = this.data;
+        }
+        if (isLast) {
+          const arr = current as unknown[];
+          const index = arr.length;
+          arr.push({});
+          return index;
+        }
+        // Intermediate root array: use / create index 0
+        const arr = current as unknown[];
+        if (arr.length === 0) arr.push({});
+        if (
+          typeof arr[0] !== "object" ||
+          arr[0] === null ||
+          Array.isArray(arr[0])
+        ) {
+          arr[0] = {};
+        }
+        current = arr[0];
+        continue;
+      }
+
+      if (current === null || typeof current !== "object" || Array.isArray(current)) {
+        return 0;
+      }
+      const obj = current as JsonObject;
+
+      // Final segment of an array-container path is the array field (even without [*] suffix).
+      if (seg.wildcard || isLast) {
+        let arr = obj[seg.key];
+        if (!Array.isArray(arr)) {
+          arr = [];
+          obj[seg.key] = arr;
+        }
+        if (isLast) {
+          const index = (arr as unknown[]).length;
+          (arr as unknown[]).push({});
+          return index;
+        }
+        if ((arr as unknown[]).length === 0) (arr as unknown[]).push({});
+        if (
+          typeof (arr as unknown[])[0] !== "object" ||
+          (arr as unknown[])[0] === null ||
+          Array.isArray((arr as unknown[])[0])
+        ) {
+          (arr as unknown[])[0] = {};
+        }
+        current = (arr as unknown[])[0];
+      } else {
+        if (
+          typeof obj[seg.key] !== "object" ||
+          obj[seg.key] === null ||
+          Array.isArray(obj[seg.key])
+        ) {
+          obj[seg.key] = {};
+        }
+        current = obj[seg.key];
+      }
+    }
+    return 0;
   }
 
   writeField(
@@ -69,34 +181,61 @@ class PreviewWriter {
     value: unknown,
     concreteArrayIndex?: number,
   ): void {
-    if (!absolutePath.startsWith("$.")) return;
-    const rawParts = absolutePath.slice(2).split(".");
-    const parts = rawParts.map((p) => {
-      if (p.endsWith("[*]")) {
-        return {
-          key: p.slice(0, -3),
-          array: true as const,
-        };
-      }
-      return { key: p, array: false as const };
-    });
+    if (!isAbsolutePath(absolutePath) || absolutePath === "$") return;
 
-    let current: unknown = this.root;
-    for (let i = 0; i < parts.length; i++) {
-      const part = parts[i]!;
-      const isLast = i === parts.length - 1;
-      if (part.array) {
-        if (typeof current !== "object" || current === null || Array.isArray(current)) {
+    const segments = parseAbsolutePath(absolutePath);
+    const wildcardIndexes = segments
+      .map((seg, i) => (seg.wildcard ? i : -1))
+      .filter((i) => i >= 0);
+    const indexedWildcardAt =
+      concreteArrayIndex !== undefined
+        ? wildcardIndexes[wildcardIndexes.length - 1]
+        : undefined;
+
+    let current: unknown = this.data;
+
+    for (let i = 0; i < segments.length; i++) {
+      const seg = segments[i]!;
+      const isLast = i === segments.length - 1;
+
+      if (seg.key === "" && seg.wildcard) {
+        if (!Array.isArray(current)) {
+          this.data = [];
+          current = this.data;
+        }
+        const arr = current as unknown[];
+        const idx =
+          indexedWildcardAt === i && concreteArrayIndex !== undefined
+            ? concreteArrayIndex
+            : Math.max(0, arr.length - 1);
+        while (arr.length <= idx) arr.push({});
+        if (isLast) {
+          arr[idx] = value;
+          return;
+        }
+        if (
+          typeof arr[idx] !== "object" ||
+          arr[idx] === null ||
+          Array.isArray(arr[idx])
+        ) {
+          arr[idx] = {};
+        }
+        current = arr[idx];
+        continue;
+      }
+
+      if (seg.wildcard) {
+        if (current === null || typeof current !== "object" || Array.isArray(current)) {
           return;
         }
         const obj = current as JsonObject;
-        let arr = obj[part.key];
+        let arr = obj[seg.key];
         if (!Array.isArray(arr)) {
           arr = [];
-          obj[part.key] = arr;
+          obj[seg.key] = arr;
         }
         const idx =
-          concreteArrayIndex !== undefined
+          indexedWildcardAt === i && concreteArrayIndex !== undefined
             ? concreteArrayIndex
             : Math.max(0, (arr as unknown[]).length - 1);
         while ((arr as unknown[]).length <= idx) {
@@ -114,102 +253,75 @@ class PreviewWriter {
           (arr as unknown[])[idx] = {};
         }
         current = (arr as unknown[])[idx];
-      } else if (isLast) {
-        if (typeof current !== "object" || current === null || Array.isArray(current)) {
-          return;
-        }
-        (current as JsonObject)[part.key] = value;
-      } else {
-        if (typeof current !== "object" || current === null || Array.isArray(current)) {
-          return;
-        }
-        const obj = current as JsonObject;
-        if (
-          typeof obj[part.key] !== "object" ||
-          obj[part.key] === null ||
-          Array.isArray(obj[part.key])
-        ) {
-          obj[part.key] = {};
-        }
-        current = obj[part.key];
+        continue;
       }
+
+      if (isLast) {
+        if (current === null || typeof current !== "object" || Array.isArray(current)) {
+          return;
+        }
+        (current as JsonObject)[seg.key] = value;
+        return;
+      }
+
+      if (current === null || typeof current !== "object" || Array.isArray(current)) {
+        return;
+      }
+      const obj = current as JsonObject;
+      if (
+        typeof obj[seg.key] !== "object" ||
+        obj[seg.key] === null ||
+        Array.isArray(obj[seg.key])
+      ) {
+        obj[seg.key] = {};
+      }
+      current = obj[seg.key];
     }
   }
 
   writeNode(absolutePath: string, value: unknown): void {
     if (absolutePath === "$") return;
-    if (!absolutePath.startsWith("$.")) return;
-    // Whole-node write at path (may be array append if path ends with [*])
+    if (!isAbsolutePath(absolutePath)) return;
     if (absolutePath.endsWith("[*]")) {
       const arrayPath = absolutePath.slice(0, -3);
-      const parts = this.split(arrayPath);
-      const { parent, key } = this.navigateToParent(parts);
-      const existing = parent[key];
-      const arr = Array.isArray(existing) ? existing : [];
-      arr.push(value);
-      parent[key] = arr;
+      if (arrayPath === "$" || arrayPath === "") {
+        if (!Array.isArray(this.data)) this.data = [];
+        (this.data as unknown[]).push(value);
+        return;
+      }
+      const idx = this.allocateArrayElement(arrayPath);
+      // Replace the placeholder {} with the provided value
+      const values = getPathValues(this.data, `${arrayPath}[*]`);
+      if (values.length > idx) {
+        // allocate already pushed {}; overwrite via writeField on synthetic path
+        this.writeField(`${arrayPath}[*]`, value, idx);
+      }
       return;
     }
     this.writeField(absolutePath, value);
   }
-
-  private split(absolutePath: string): string[] {
-    return absolutePath.replace(/^\$\./, "").split(".");
-  }
-
-  private navigateToParent(parts: string[]): {
-    parent: JsonObject;
-    key: string;
-  } {
-    let current: JsonObject = this.root;
-    for (let i = 0; i < parts.length - 1; i++) {
-      const key = parts[i]!.replace(/\[\*\]$/, "");
-      if (
-        typeof current[key] !== "object" ||
-        current[key] === null ||
-        Array.isArray(current[key])
-      ) {
-        current[key] = {};
-      }
-      current = current[key] as JsonObject;
-    }
-    const last = parts[parts.length - 1]!.replace(/\[\*\]$/, "");
-    return { parent: current, key: last };
-  }
 }
 
+/**
+ * Read a child value for the Nth expanded source element.
+ * Supports nested `[*]` by using flat getPathValues indexing.
+ */
 function getIndexedArrayChildValue(
   document: unknown,
   sourceNodeWithStar: string,
   relativeChild: string,
   arrayIndex: number,
 ): unknown {
-  const star = sourceNodeWithStar.indexOf("[*]");
-  if (star === -1) {
-    return getPathValue(
-      document,
-      joinPathAware(sourceNodeWithStar, relativeChild, false),
-    );
+  const absolute = joinPathAware(
+    sourceNodeWithStar,
+    relativeChild === "" ? "." : relativeChild,
+    sourceNodeWithStar.includes("[*]"),
+  );
+  if (sourceNodeWithStar.includes("[*]")) {
+    const values = getPathValues(document, absolute);
+    return values[arrayIndex];
   }
-  const arrayPath = sourceNodeWithStar.slice(0, star);
-  const arr = getPathValue(document, arrayPath);
-  if (!Array.isArray(arr) || arrayIndex >= arr.length) return undefined;
-  const element = arr[arrayIndex];
-  if (relativeChild === "" || relativeChild === ".") return element;
-  if (element === null || typeof element !== "object") return undefined;
-  const parts = relativeChild.replace(/^\./, "").split(".");
-  let current: unknown = element;
-  for (const part of parts) {
-    if (
-      current === null ||
-      typeof current !== "object" ||
-      Array.isArray(current)
-    ) {
-      return undefined;
-    }
-    current = (current as JsonObject)[part];
-  }
-  return current;
+  return getPathValue(document, absolute);
 }
 
 /**
@@ -245,15 +357,11 @@ export function previewRuleGroups(
     });
   }
 
-  const resultObject: JsonObject =
-    options.targetDocument &&
-    typeof options.targetDocument === "object" &&
-    options.targetDocument !== null &&
-    !Array.isArray(options.targetDocument)
-      ? (cloneJson(options.targetDocument) as JsonObject)
+  const initialTarget =
+    options.targetDocument !== undefined
+      ? options.targetDocument
       : {};
-
-  const writer = new PreviewWriter(resultObject);
+  const writer = new PreviewWriter(initialTarget);
 
   for (const match of evaluation.matched) {
     const rule = findRule(ruleGroups, match.ruleId);
@@ -287,29 +395,10 @@ export function previewRuleGroups(
       }
 
       const dest = rule.destinationNode;
-      if (dest.endsWith("[*]")) {
-        writer.writeNode(dest, value);
-      } else if (match.arrayIndex !== undefined) {
-        // Append into destination array container when source was per-element
-        writer.writeNode(dest, value);
-        // If dest is an array field, append; writeNode on non-[*] replaces.
-        // Use explicit append form:
-        const parts = dest.replace(/^\$\./, "").split(".");
-        // Re-read and convert to append for top-level array destinations
-        const top = parts[0]!;
-        if (parts.length === 1) {
-          const existing = resultObject[top];
-          const arr = Array.isArray(existing) ? existing : [];
-          // If we already wrote a non-array, convert
-          if (!Array.isArray(existing)) {
-            resultObject[top] = value !== undefined ? [value] : [];
-          } else {
-            arr.push(value);
-            resultObject[top] = arr;
-          }
-        } else {
-          writer.writeNode(dest, value);
-        }
+      if (dest.endsWith("[*]") || match.arrayIndex !== undefined) {
+        // Per-element / explicit array destination → append
+        const appendPath = dest.endsWith("[*]") ? dest : `${dest}[*]`;
+        writer.writeNode(appendPath, value);
       } else {
         writer.writeNode(dest, value);
       }
@@ -327,25 +416,23 @@ export function previewRuleGroups(
     }
 
     // APPLY_CHILD_MAPPINGS
-    const destIsArray =
-      rule.destinationNode.endsWith("[*]") ||
-      /\[\*\]/.test(rule.destinationNode);
-    const destArrayPath = rule.destinationNode.endsWith("[*]")
-      ? rule.destinationNode.slice(0, -3)
-      : rule.destinationNode.includes("[*]")
-        ? rule.destinationNode.slice(0, rule.destinationNode.indexOf("[*]"))
-        : rule.destinationNode;
+    const destHasWildcard = /\[\*\]/.test(rule.destinationNode);
+    // Use the last array container so nested `$[*].product[*].…` appends correctly.
+    // When destination has no [*], the destination node itself is the array container
+    // (e.g. $.PrimaryProducts) for per-element matches.
+    const destArrayPath = destHasWildcard
+      ? lastArrayContainerPath(rule.destinationNode)
+      : rule.destinationNode;
 
     // Append into a target array only when the match is array-sourced or dest is explicitly array.
     const treatAsArrayItems =
-      destIsArray ||
+      destHasWildcard ||
       match.arrayIndex !== undefined ||
       rule.sourceNode.includes("[*]");
 
     let targetElementIndex: number | undefined;
     if (treatAsArrayItems) {
-      const container = destArrayPath;
-      targetElementIndex = writer.allocateArrayElement(container);
+      targetElementIndex = writer.allocateArrayElement(destArrayPath);
     }
 
     for (const child of rule.childMappings) {
@@ -354,11 +441,16 @@ export function previewRuleGroups(
         child.sourcePath,
         rule.sourceNode.endsWith("[*]") || rule.sourceNode.includes("[*]"),
       );
-      const absTarget = joinPathAware(
-        treatAsArrayItems ? `${destArrayPath}[*]` : rule.destinationNode,
-        child.targetPath,
-        treatAsArrayItems,
-      );
+      // Absolute target keeps properties after the last [*] (e.g. …productOffering.id).
+      // If destination has no wildcard, write through `dest[*].child`.
+      const targetBase = destHasWildcard
+        ? rule.destinationNode
+        : treatAsArrayItems
+          ? destArrayPath === "$"
+            ? "$[*]"
+            : `${destArrayPath}[*]`
+          : rule.destinationNode;
+      const absTarget = joinPathAware(targetBase, child.targetPath, false);
 
       let value: unknown;
       if (match.arrayIndex !== undefined && rule.sourceNode.includes("[*]")) {
@@ -422,7 +514,7 @@ export function previewRuleGroups(
     })),
     fallbackUsed: evaluation.fallbackUsed,
     destinations: evaluation.destinations,
-    resultObject,
+    resultObject: writer.getResult(),
     traces,
     notes,
     warnings,

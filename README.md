@@ -41,14 +41,41 @@ The validation engine lives in `@mapping-assurance/core` so it can later be reus
 
 ## Quick start
 
+Requires **Node.js 20+** (22 / 24 are fine). Use the same Node version for `npm install` and `npm run dev`.
+
 ```bash
 npm install
 npm run build:core
 npm run dev
 ```
 
-- Web UI: http://localhost:5173  
-- API: http://localhost:3001/api/health  
+- Web UI: http://127.0.0.1:5173  
+- API: http://127.0.0.1:3001/api/health  
+
+### Troubleshooting: `Request failed (500)` / Vite `ECONNREFUSED :3001`
+
+The UI proxies `/api` to the API. If the API process crashed, every request looks like a 500.
+
+**Most common cause on Windows / Node 24:** native `better-sqlite3` ABI mismatch — either an old package version, or `node_modules` built under a different Node than the one running now:
+
+```text
+The module '...better_sqlite3.node' was compiled against a different Node.js version
+NODE_MODULE_VERSION 115 ... requires NODE_MODULE_VERSION 137
+```
+
+This repo pins `better-sqlite3@^12.11.1` (prebuilds for Node 20–24). From the repo root, with your current Node active (`node -v`):
+
+```powershell
+Remove-Item -Recurse -Force node_modules
+npm install
+npm run rebuild:native
+npm run build:core
+npm run dev
+```
+
+On macOS/Linux use `rm -rf node_modules` instead of `Remove-Item`.
+
+Confirm the API is up before using the UI: open http://127.0.0.1:3001/api/health.
 
 ### Production-ish run
 

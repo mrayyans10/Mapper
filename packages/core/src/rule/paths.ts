@@ -23,9 +23,14 @@ export function isRelativePath(path: string): boolean {
   return !path.startsWith("$");
 }
 
-/** True when path is absolute JSONPath-style (`$` or `$.…`). */
+/** True when path is absolute JSONPath-style (`$`, `$.…`, or root-array `$[*]…`). */
 export function isAbsolutePath(path: string): boolean {
-  return path === "$" || path.startsWith("$.");
+  return (
+    path === "$" ||
+    path.startsWith("$.") ||
+    path === "$[*]" ||
+    path.startsWith("$[*]")
+  );
 }
 
 /**
@@ -77,12 +82,33 @@ interface PathSegment {
   wildcard: boolean;
 }
 
-/** Parse `$.a.b[*].c` into segments. */
+/** Parse `$.a.b[*].c` or root-array `$[*].a` into segments. */
 export function parseAbsolutePath(path: string): PathSegment[] {
   if (!isAbsolutePath(path)) {
     throw new PathError(`Expected absolute path, got "${path}"`);
   }
   if (path === "$") return [];
+
+  // Root-array document: `$[*]` or `$[*].product[*].id`
+  if (path === "$[*]" || path.startsWith("$[*]")) {
+    const rest = path.startsWith("$[*].")
+      ? path.slice("$[*].".length)
+      : path === "$[*]"
+        ? ""
+        : path.slice("$[*]".length);
+    const rootSeg: PathSegment = { key: "", wildcard: true };
+    if (!rest) return [rootSeg];
+    return [
+      rootSeg,
+      ...rest.split(".").map((part) => {
+        if (part.endsWith("[*]")) {
+          return { key: part.slice(0, -3), wildcard: true };
+        }
+        return { key: part, wildcard: false };
+      }),
+    ];
+  }
+
   const body = path.slice(2); // strip "$."
   if (!body) return [];
   return body.split(".").map((part) => {
@@ -96,6 +122,7 @@ export function parseAbsolutePath(path: string): PathSegment[] {
 /**
  * Collect all values at an absolute path.
  * `[*]` expands to every array element (D4 support).
+ * Root-array paths (`$[*]…`) expand the document root when it is an array.
  */
 export function getPathValues(root: unknown, absolutePath: string): unknown[] {
   const segments = parseAbsolutePath(absolutePath);
@@ -103,6 +130,11 @@ export function getPathValues(root: unknown, absolutePath: string): unknown[] {
   for (const seg of segments) {
     const next: unknown[] = [];
     for (const node of current) {
+      if (seg.key === "" && seg.wildcard) {
+        // Root-array segment from `$[*]…`
+        if (Array.isArray(node)) next.push(...node);
+        continue;
+      }
       if (node === null || typeof node !== "object") continue;
       if (Array.isArray(node)) continue;
       const record = node as Record<string, unknown>;
@@ -141,6 +173,8 @@ export interface SourceContext {
 /**
  * Expand a RuleGroup sourceNode into evaluation contexts.
  * Paths containing `[*]` yield one context per array element (D4).
+ * Nested wildcards are supported, e.g. `$.subscriberList[*].socs[*]`.
+ * `arrayIndex` is the flat match index across all expanded elements (0..n-1).
  */
 export function expandSourceContexts(
   document: unknown,
@@ -161,55 +195,17 @@ export function expandSourceContexts(
     return [{ relativeRoot: values[0], document }];
   }
 
-  // Split into prefix before first [*] and optional suffix after.
-  // MVP: support a single [*] in sourceNode.
-  const starCount = (sourceNode.match(/\[\*\]/g) ?? []).length;
-  if (starCount !== 1) {
-    throw new PathError(
-      `sourceNode may contain at most one [*] in Step 2; got "${sourceNode}"`,
-    );
-  }
-
-  const starIndex = sourceNode.indexOf("[*]");
-  const arrayPath = sourceNode.slice(0, starIndex); // e.g. $.items
-  const suffix = sourceNode.slice(starIndex + 3); // e.g. "" or ".nested"
-
-  const arrays = getPathValues(document, arrayPath);
-  const contexts: SourceContext[] = [];
-  for (const arr of arrays) {
-    if (!Array.isArray(arr)) continue;
-    arr.forEach((element, index) => {
-      let relativeRoot: unknown = element;
-      if (suffix.startsWith(".")) {
-        const subPath = `$${suffix}`; // treat suffix as relative from element via synthetic
-        // suffix is like `.foo.bar` — resolve on element
-        relativeRoot = getPathValueOnObject(element, suffix.slice(1));
-      } else if (suffix !== "") {
-        relativeRoot = getPathValueOnObject(element, suffix);
-      }
-      contexts.push({ relativeRoot, document, arrayIndex: index });
-    });
-  }
-  if (contexts.length === 0) {
+  // Wildcard path: one context per concrete value at the full sourceNode.
+  // Works for one or many nested [*] (and root-array `$[*]…`).
+  const values = getPathValues(document, sourceNode);
+  if (values.length === 0) {
     return [{ relativeRoot: undefined, document }];
   }
-  return contexts;
-}
-
-function getPathValueOnObject(
-  root: unknown,
-  dottedPath: string,
-): unknown | undefined {
-  if (!dottedPath) return root;
-  const parts = dottedPath.split(".");
-  let current: unknown = root;
-  for (const part of parts) {
-    if (current === null || typeof current !== "object" || Array.isArray(current)) {
-      return undefined;
-    }
-    current = (current as Record<string, unknown>)[part];
-  }
-  return current;
+  return values.map((relativeRoot, arrayIndex) => ({
+    relativeRoot,
+    document,
+    arrayIndex,
+  }));
 }
 
 /**
@@ -311,7 +307,14 @@ export function joinPathAware(
   parentIsArray?: boolean,
 ): AbsolutePath {
   let base = nodePath;
-  if (parentIsArray && !base.endsWith("[*]") && base !== "$") {
+  // Only append [*] when the caller says this node is an array AND the path
+  // does not already use array syntax (including root-array `$[*]…`).
+  if (
+    parentIsArray &&
+    !base.endsWith("[*]") &&
+    base !== "$" &&
+    !base.includes("[*]")
+  ) {
     base = `${base}[*]`;
   }
   return joinPath(base, relativePath);

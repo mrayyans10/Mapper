@@ -24,7 +24,9 @@ import type {
   RuleValidationIssueType,
 } from "../rule/types.js";
 import { resolveRuleCopyMode } from "../rule/copy-mode.js";
-import { validateMappings } from "./engine.js";export interface RuleValidationSummary {
+import { validateMappings } from "./engine.js";
+
+export interface RuleValidationSummary {
   errorCount: number;
   warningCount: number;
   infoCount: number;
@@ -155,9 +157,49 @@ function validateConditionShape(
   ruleId: string,
   issues: RuleValidationIssue[],
 ): void {
+  if (!expr || typeof expr !== "object" || !("type" in expr)) {
+    issues.push(
+      issue({
+        type: "invalid_condition",
+        ruleGroupId,
+        ruleId,
+        message: "Condition expression is missing or not an object.",
+        recommendedFix:
+          'Use { type: "atom", atom: { path, operator, value? } } (or and/or/not).',
+      }),
+    );
+    return;
+  }
+
   switch (expr.type) {
     case "atom": {
-      const { atom } = expr;
+      const atom = expr.atom;
+      if (!atom || typeof atom !== "object") {
+        issues.push(
+          issue({
+            type: "invalid_condition",
+            ruleGroupId,
+            ruleId,
+            message:
+              'Atom condition is missing `atom` (expected { type: "atom", atom: { path, operator, value? } }).',
+            recommendedFix:
+              "Nest path/operator/value under `atom`; do not put them on the expression root.",
+          }),
+        );
+        return;
+      }
+      if (typeof atom.operator !== "string" || !atom.operator) {
+        issues.push(
+          issue({
+            type: "invalid_condition",
+            ruleGroupId,
+            ruleId,
+            message: "Condition atom is missing a valid operator.",
+            recommendedFix: "Set atom.operator (e.g. ==, EXISTS, IN).",
+          }),
+        );
+        return;
+      }
       if (
         atom.operator !== "EXISTS" &&
         atom.operator !== "NOT_EXISTS" &&
@@ -203,18 +245,28 @@ function validateConditionShape(
         }
       }
       // Dry-run evaluation against empty context to catch structural errors.
-      const probe = evaluateCondition(expr, {
+      evaluateCondition(expr, {
         relativeRoot: {},
         document: {},
       });
-      if (probe.error && atom.operator === "MATCHES_REGEX") {
-        // already reported
-      }
       return;
     }
     case "and":
-    case "or":
-      if (expr.children.length === 0) {
+    case "or": {
+      const children = Array.isArray(expr.children) ? expr.children : null;
+      if (!children) {
+        issues.push(
+          issue({
+            type: "invalid_condition",
+            ruleGroupId,
+            ruleId,
+            message: `${expr.type.toUpperCase()} expression is missing a children array.`,
+            recommendedFix: `Use { type: "${expr.type}", children: [...] }.`,
+          }),
+        );
+        return;
+      }
+      if (children.length === 0) {
         issues.push(
           issue({
             severity: "warning",
@@ -226,13 +278,36 @@ function validateConditionShape(
           }),
         );
       }
-      for (const child of expr.children) {
+      for (const child of children) {
         validateConditionShape(child, ruleGroupId, ruleId, issues);
       }
       return;
+    }
     case "not":
+      if (!expr.child) {
+        issues.push(
+          issue({
+            type: "invalid_condition",
+            ruleGroupId,
+            ruleId,
+            message: "NOT expression is missing child.",
+            recommendedFix: 'Use { type: "not", child: <ConditionExpr> }.',
+          }),
+        );
+        return;
+      }
       validateConditionShape(expr.child, ruleGroupId, ruleId, issues);
       return;
+    default:
+      issues.push(
+        issue({
+          type: "invalid_condition",
+          ruleGroupId,
+          ruleId,
+          message: `Unknown condition type: ${JSON.stringify((expr as { type?: unknown }).type)}.`,
+          recommendedFix: 'Use type "atom", "and", "or", or "not".',
+        }),
+      );
   }
 }
 
