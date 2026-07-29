@@ -18,23 +18,42 @@ import type {
 } from "@mapping-assurance/core";
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, {
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
-    ...init,
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+      ...init,
+    });
+  } catch {
+    throw new Error(
+      "Cannot reach the Mapping Assurance API. Run `npm run dev` from the repo root (API on :3001, UI on :5173).",
+    );
+  }
+  if (response.status === 204) return undefined as T;
+
+  const text = await response.text();
   if (!response.ok) {
     let message = `Request failed (${response.status})`;
     try {
-      const body = (await response.json()) as { error?: unknown };
+      const body = JSON.parse(text) as { error?: unknown };
       if (typeof body.error === "string") message = body.error;
       else if (body.error) message = JSON.stringify(body.error);
     } catch {
-      // ignore
+      if (
+        response.status >= 500 &&
+        (!text || /internal server error|ECONNREFUSED|proxy/i.test(text))
+      ) {
+        message =
+          "API returned 500 (often means the API is not running). From the repo root run `npm run dev`, then open http://127.0.0.1:5173 and check http://127.0.0.1:3001/api/health.";
+      } else if (text.trim()) {
+        message = text.trim().slice(0, 300);
+      }
     }
     throw new Error(message);
   }
-  if (response.status === 204) return undefined as T;
-  return (await response.json()) as T;
+
+  if (!text) return undefined as T;
+  return JSON.parse(text) as T;
 }
 
 export const api = {
