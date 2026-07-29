@@ -172,6 +172,56 @@ describe("previewRuleGroups", () => {
     });
   });
 
+  it("previews nested [*] source with condition into root-array target", () => {
+    const groups: RuleGroup[] = [
+      {
+        id: "g1",
+        sourceNode: "$.subscriberList[*].socs[*]",
+        executionMode: "first-match",
+        rules: [
+          rule({
+            id: "soc-p",
+            sourceNode: "$.subscriberList[*].socs[*]",
+            destinationNode: "$[*].product[*].productOffering",
+            kind: "conditional",
+            condition: {
+              type: "atom",
+              atom: { path: "socCode", operator: "==", value: "p" },
+            },
+            copyMode: "APPLY_CHILD_MAPPINGS",
+            childMappings: [
+              {
+                id: "c1",
+                sourcePath: "socCode",
+                targetPath: "id",
+                status: "draft",
+              },
+            ],
+          }),
+        ],
+      },
+    ];
+
+    const report = previewRuleGroups(groups, {
+      subscriberList: [
+        {
+          socs: [{ socCode: "p" }, { socCode: "x" }, { socCode: "p" }],
+        },
+      ],
+    });
+
+    expect(report.matchedRules).toHaveLength(2);
+    expect(report.skippedRules).toHaveLength(1);
+    expect(report.resultObject).toEqual([
+      {
+        product: [
+          { productOffering: { id: "p" } },
+          { productOffering: { id: "p" } },
+        ],
+      },
+    ]);
+  });
+
   it("copies direct legacy mappings and warns on deferred transformations", () => {
     const groups: RuleGroup[] = [
       {

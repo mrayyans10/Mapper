@@ -98,4 +98,31 @@ describe("getPathValues / expandSourceContexts", () => {
     expect(ctxs).toHaveLength(1);
     expect(ctxs[0]?.relativeRoot).toEqual({ amount: 1500 });
   });
+
+  it("expands nested [*] source nodes (subscriberList[*].socs[*])", () => {
+    const nested = {
+      subscriberList: [
+        {
+          socs: [
+            { socCode: "p" },
+            { socCode: "x" },
+          ],
+        },
+        {
+          socs: [{ socCode: "p" }],
+        },
+      ],
+    };
+    const ctxs = expandSourceContexts(
+      nested,
+      "$.subscriberList[*].socs[*]",
+    );
+    expect(ctxs).toHaveLength(3);
+    expect(ctxs.map((c) => c.relativeRoot)).toEqual([
+      { socCode: "p" },
+      { socCode: "x" },
+      { socCode: "p" },
+    ]);
+    expect(ctxs.map((c) => c.arrayIndex)).toEqual([0, 1, 2]);
+  });
 });
