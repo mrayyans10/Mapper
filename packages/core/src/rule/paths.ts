@@ -23,9 +23,14 @@ export function isRelativePath(path: string): boolean {
   return !path.startsWith("$");
 }
 
-/** True when path is absolute JSONPath-style (`$` or `$.…`). */
+/** True when path is absolute JSONPath-style (`$`, `$.…`, or root-array `$[*]…`). */
 export function isAbsolutePath(path: string): boolean {
-  return path === "$" || path.startsWith("$.");
+  return (
+    path === "$" ||
+    path.startsWith("$.") ||
+    path === "$[*]" ||
+    path.startsWith("$[*]")
+  );
 }
 
 /**
@@ -77,12 +82,33 @@ interface PathSegment {
   wildcard: boolean;
 }
 
-/** Parse `$.a.b[*].c` into segments. */
+/** Parse `$.a.b[*].c` or root-array `$[*].a` into segments. */
 export function parseAbsolutePath(path: string): PathSegment[] {
   if (!isAbsolutePath(path)) {
     throw new PathError(`Expected absolute path, got "${path}"`);
   }
   if (path === "$") return [];
+
+  // Root-array document: `$[*]` or `$[*].product[*].id`
+  if (path === "$[*]" || path.startsWith("$[*]")) {
+    const rest = path.startsWith("$[*].")
+      ? path.slice("$[*].".length)
+      : path === "$[*]"
+        ? ""
+        : path.slice("$[*]".length);
+    const rootSeg: PathSegment = { key: "", wildcard: true };
+    if (!rest) return [rootSeg];
+    return [
+      rootSeg,
+      ...rest.split(".").map((part) => {
+        if (part.endsWith("[*]")) {
+          return { key: part.slice(0, -3), wildcard: true };
+        }
+        return { key: part, wildcard: false };
+      }),
+    ];
+  }
+
   const body = path.slice(2); // strip "$."
   if (!body) return [];
   return body.split(".").map((part) => {
@@ -96,6 +122,7 @@ export function parseAbsolutePath(path: string): PathSegment[] {
 /**
  * Collect all values at an absolute path.
  * `[*]` expands to every array element (D4 support).
+ * Root-array paths (`$[*]…`) expand the document root when it is an array.
  */
 export function getPathValues(root: unknown, absolutePath: string): unknown[] {
   const segments = parseAbsolutePath(absolutePath);
@@ -103,6 +130,11 @@ export function getPathValues(root: unknown, absolutePath: string): unknown[] {
   for (const seg of segments) {
     const next: unknown[] = [];
     for (const node of current) {
+      if (seg.key === "" && seg.wildcard) {
+        // Root-array segment from `$[*]…`
+        if (Array.isArray(node)) next.push(...node);
+        continue;
+      }
       if (node === null || typeof node !== "object") continue;
       if (Array.isArray(node)) continue;
       const record = node as Record<string, unknown>;
@@ -311,7 +343,14 @@ export function joinPathAware(
   parentIsArray?: boolean,
 ): AbsolutePath {
   let base = nodePath;
-  if (parentIsArray && !base.endsWith("[*]") && base !== "$") {
+  // Only append [*] when the caller says this node is an array AND the path
+  // does not already use array syntax (including root-array `$[*]…`).
+  if (
+    parentIsArray &&
+    !base.endsWith("[*]") &&
+    base !== "$" &&
+    !base.includes("[*]")
+  ) {
     base = `${base}[*]`;
   }
   return joinPath(base, relativePath);

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   joinPath,
+  joinPathAware,
+  isAbsolutePath,
   isRelativePath,
   PathError,
   expandSourceContexts,
@@ -30,6 +32,29 @@ describe("isRelativePath", () => {
   it("detects relative vs absolute", () => {
     expect(isRelativePath("type")).toBe(true);
     expect(isRelativePath("$.type")).toBe(false);
+  });
+});
+
+describe("root-array absolute paths", () => {
+  it("treats $[*]… as absolute", () => {
+    expect(isAbsolutePath("$[*]")).toBe(true);
+    expect(isAbsolutePath("$[*].product[*].productOffering")).toBe(true);
+  });
+
+  it("joins child onto root-array destination without crashing", () => {
+    expect(
+      joinPathAware("$[*].product[*].productOffering", "id", true),
+    ).toBe("$[*].product[*].productOffering.id");
+    expect(
+      joinPathAware("$[*].product[*].productOffering", ".", false),
+    ).toBe("$[*].product[*].productOffering");
+  });
+
+  it("reads values from root-array documents", () => {
+    const doc = [{ product: [{ productOffering: { id: "p" } }] }];
+    expect(getPathValues(doc, "$[*].product[*].productOffering.id")).toEqual([
+      "p",
+    ]);
   });
 });
 

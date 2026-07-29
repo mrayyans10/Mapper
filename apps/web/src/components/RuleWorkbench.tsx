@@ -41,10 +41,29 @@ function syncPriorities(rules: Rule[]): Rule[] {
 }
 
 function resolveCopyMode(rule: Rule): RuleCopyMode {
+  const children = rule.childMappings ?? [];
   return (
     rule.copyMode ??
-    (rule.childMappings.length > 0 ? "APPLY_CHILD_MAPPINGS" : "ROUTE_ONLY")
+    (children.length > 0 ? "APPLY_CHILD_MAPPINGS" : "ROUTE_ONLY")
   );
+}
+
+/** Resolve absolute child paths without crashing the workbench on bad input. */
+function safeJoinPath(
+  nodePath: string,
+  relativePath: string,
+  parentIsArray?: boolean,
+): { path: string; error?: string } {
+  try {
+    return {
+      path: joinPathAware(nodePath || "$", relativePath || ".", parentIsArray),
+    };
+  } catch (err) {
+    return {
+      path: "(invalid path)",
+      error: err instanceof Error ? err.message : "Invalid path",
+    };
+  }
 }
 
 interface RuleWorkbenchProps {
@@ -202,8 +221,9 @@ export function RuleWorkbench({
       targetPath: "",
       status: "draft",
     };
+    const existing = selectedRule.childMappings ?? [];
     updateRule({
-      childMappings: [...selectedRule.childMappings, child],
+      childMappings: [...existing, child],
       copyMode: selectedRule.copyMode ?? "APPLY_CHILD_MAPPINGS",
     });
   }
@@ -211,7 +231,7 @@ export function RuleWorkbench({
   function updateChild(id: string, patch: Partial<ChildMapping>) {
     if (!selectedRule) return;
     updateRule({
-      childMappings: selectedRule.childMappings.map((c) =>
+      childMappings: (selectedRule.childMappings ?? []).map((c) =>
         c.id === id ? { ...c, ...patch } : c,
       ),
     });
@@ -220,7 +240,9 @@ export function RuleWorkbench({
   function removeChild(id: string) {
     if (!selectedRule) return;
     updateRule({
-      childMappings: selectedRule.childMappings.filter((c) => c.id !== id),
+      childMappings: (selectedRule.childMappings ?? []).filter(
+        (c) => c.id !== id,
+      ),
     });
   }
 
@@ -377,7 +399,7 @@ export function RuleWorkbench({
                                   {resolveCopyMode(r)}
                                 </span>
                                 <span className="badge info">
-                                  {r.childMappings.length} children
+                                  {(r.childMappings ?? []).length} children
                                 </span>
                                 {!r.enabled ? (
                                   <span className="badge warning">disabled</span>
@@ -416,9 +438,9 @@ export function RuleWorkbench({
                             </button>
                           </div>
                         </div>
-                        {r.childMappings.length > 0 ? (
+                        {(r.childMappings ?? []).length > 0 ? (
                           <ul className="child-summary-list">
-                            {r.childMappings.map((c) => (
+                            {(r.childMappings ?? []).map((c) => (
                               <li
                                 key={c.id}
                                 className={
@@ -688,7 +710,7 @@ export function RuleWorkbench({
                       Add child mapping
                     </button>
                   </div>
-                  {selectedRule.childMappings.length === 0 ? (
+                  {(selectedRule.childMappings ?? []).length === 0 ? (
                     <p className="muted">
                       No child mappings.{" "}
                       {resolveCopyMode(selectedRule) === "ROUTE_ONLY"
@@ -709,23 +731,26 @@ export function RuleWorkbench({
                         </tr>
                       </thead>
                       <tbody>
-                        {selectedRule.childMappings.map((c) => {
-                          const absSource = joinPathAware(
+                        {(selectedRule.childMappings ?? []).map((c) => {
+                          const joinedSource = safeJoinPath(
                             selectedGroup.sourceNode,
                             c.sourcePath || ".",
                             sourceIsArray,
                           );
-                          const absTarget = joinPathAware(
+                          // Destination array-ness only — do not inherit source [*]
+                          // (that previously corrupted `$[*].…` targets and blanked the UI).
+                          const joinedTarget = safeJoinPath(
                             selectedRule.destinationNode || "$",
                             c.targetPath || ".",
-                            selectedRule.destinationNode.includes("[*]") ||
-                              sourceIsArray,
+                            selectedRule.destinationNode.endsWith("[*]"),
                           );
                           const pathError =
                             c.sourcePath.startsWith("$.") ||
-                            c.targetPath.startsWith("$.")
+                            c.sourcePath.startsWith("$[") ||
+                            c.targetPath.startsWith("$.") ||
+                            c.targetPath.startsWith("$[")
                               ? "Relative paths should not start with $."
-                              : null;
+                              : joinedSource.error || joinedTarget.error || null;
                           return (
                             <tr
                               key={c.id}
@@ -765,8 +790,8 @@ export function RuleWorkbench({
                                   className="mono muted"
                                   style={{ fontSize: "0.7rem" }}
                                 >
-                                  {absSource}
-                                  <br />→ {absTarget}
+                                  {joinedSource.path}
+                                  <br />→ {joinedTarget.path}
                                 </div>
                                 {pathError ? (
                                   <div className="error-text">{pathError}</div>
