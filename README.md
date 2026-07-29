@@ -41,7 +41,7 @@ The validation engine lives in `@mapping-assurance/core` so it can later be reus
 
 ## Quick start
 
-Requires **Node.js 20+** (22 is fine). Use the same Node version for `npm install` and `npm run dev`.
+Requires **Node.js 20+** (22 / 24 are fine). Use the same Node version for `npm install` and `npm run dev`.
 
 ```bash
 npm install
@@ -56,26 +56,24 @@ npm run dev
 
 The UI proxies `/api` to the API. If the API process crashed, every request looks like a 500.
 
-**Most common cause on Windows:** `better-sqlite3` was compiled for a different Node.js version than the one currently running (e.g. installed under Node 20, then run under Node 22):
+**Most common cause on Windows / Node 24:** native `better-sqlite3` ABI mismatch — either an old package version, or `node_modules` built under a different Node than the one running now:
 
 ```text
 The module '...better_sqlite3.node' was compiled against a different Node.js version
 NODE_MODULE_VERSION 115 ... requires NODE_MODULE_VERSION 137
 ```
 
-Fix (from the repo root, with your current Node active):
+This repo pins `better-sqlite3@^12.11.1` (prebuilds for Node 20–24). From the repo root, with your current Node active (`node -v`):
 
-```bash
-node -v
-npm rebuild better-sqlite3
-# or, if that still fails:
-rm -rf node_modules
+```powershell
+Remove-Item -Recurse -Force node_modules
 npm install
+npm run rebuild:native
 npm run build:core
 npm run dev
 ```
 
-On Windows PowerShell, use `Remove-Item -Recurse -Force node_modules` instead of `rm -rf`.
+On macOS/Linux use `rm -rf node_modules` instead of `Remove-Item`.
 
 Confirm the API is up before using the UI: open http://127.0.0.1:3001/api/health.
 
